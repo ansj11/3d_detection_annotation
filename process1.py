@@ -138,7 +138,7 @@ def get_kpts3d(kpts3d_dict, brand, subbrand):
             return np.array(kpts3d_dict[key])
     return None
 
-"""process all objects with occlusion"""
+"""process all objects without occlusion"""
 def main(mode='bbox', debug=True, padding_pixel=0):
     root = "/gemini/data-2/segment/"
 
@@ -198,16 +198,9 @@ def main(mode='bbox', debug=True, padding_pixel=0):
         rgba[y0:y1, x0:x1, :3] = crop
         alpha = get_mask2(mask, xyxy)
         rgba[..., -1] = alpha
-
+        
         if not isinside(alpha):
             print('not inside', brand_str)
-            continue
-        # if "一汽_森雅R7_2017款" != brand_str:
-        #     continue
-        dilate = cv2.dilate(alpha[y0:y1, x0:x1], np.ones((3,3), np.uint8), iterations=2)
-        indices = np.unique(mask[y0:y1, x0:x1][dilate > 0])
-        if len(indices) <= 2:
-            print("not occluded mask", brand_str)
             continue
         
         pc_dirs = search_car_brand(sfm_list, brand, subbrand, color)
@@ -328,10 +321,21 @@ def main(mode='bbox', debug=True, padding_pixel=0):
         R, T = best_R, best_T
         init_camera = GS_Camera2D(R=R.T, T=T[:,0], FoVx=FovX, FoVy=FovY,
                     image=image_tensor, colmap_id=0, uid=0, image_name=subbrand, gt_alpha_mask=None, data_device=device)
-
+        
         query = GS_Refiner(images[idx:idx+1], masks[idx:idx+1], [init_camera], gaussians=gaussians, device=device, bboxes=bboxes[idx:idx+1], query=query)
+        
+    #     thread = threading.Thread(target=GS_Refiner, args=(images[idx:idx+1], masks[idx:idx+1], [init_camera], gaussians, device, bboxes[idx:idx+1], query), name=f"thread_{i}")
+    #     thread.start()
+    #     pool.append(thread)
 
-    json_path = img_path.replace('trial_v2', 'poses_v2')[:-3] + 'json'
+    # for thread in pool:
+    #     thread.join()        
+        
+    save_path = img_path.replace('trial_v2', 'pnp')
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    cv2.imwrite(save_path, render_image[...,::-1])
+
+    json_path = img_path.replace('trial_v2', 'poses_v1')[:-3] + 'json'
     os.makedirs(os.path.dirname(json_path), exist_ok=True)
 
     dic = {}
@@ -368,24 +372,20 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
     #                                             max_lr=CFG.START_LR, 
     #                                             min_lr=CFG.END_LR)
     iter_losses = list()
-    MAX_STEPS = max(1000, CFG.MAX_STEPS)
     best_RT, min_loss = None, 1e6
     best_img = None
-    for iter_step in range(MAX_STEPS):  # 100
-        if iter_step == MAX_STEPS * 1 / 2:
+    for iter_step in range(CFG.MAX_STEPS):  # 100
+        if iter_step == CFG.MAX_STEPS * 1 / 2:
             for param_group in optimizer.param_groups:
                 if param_group["name"] == "rotation":
                     param_group['lr'] = CFG.START_LR*0.1
                 if param_group["name"] == "intrinsic":
                     param_group['lr'] = CFG.START_LR*0.0
-
+                    
         idx, target_img, mask, init_camera = 0, images[0], masks[0], init_cameras[0]
         # ret = GS_Renderer(init_camera, gaussians, gaussian_PipeP, gaussian_BG)
         ret = GS_Renderer2D(init_camera, gaussians, gaussian_PipeP, gaussian_BG, idx=idx)
         unmasked = ret['render'].clone()
-        if iter_step >= MAX_STEPS * 0.2:
-            ret['render'][masks[idx].expand_as(ret['render']) <= 0.5] = 0
-            ret['rend_alpha'][masks[idx].expand_as(ret['rend_alpha']) <= 0.5] = 0
         render_img = ret['render']
         render_depth = ret['surf_depth']
         render_mask = ret['rend_alpha']

@@ -25,7 +25,7 @@ def main():
     image_paths = sorted(glob(root))
     filter_paths = []
     for image_path in image_paths:
-        json_path = image_path.replace('trial_v2', 'poses_v2')[:-3] + 'json'
+        json_path = image_path.replace('trial_v2', 'poses_v1')[:-3] + 'json'
         if os.path.exists(json_path):
             continue
         filter_paths.append(image_path)
@@ -53,14 +53,14 @@ def main():
     print('parallel pose optimize done!')
 
 def func(paths, idx):
-    for i, path in enumerate(paths):
+    for i, path in enumerate(paths[::-1]):
         
         n_gpu = torch.cuda.device_count()
         gpu_id = idx % n_gpu
         path = path.replace('(', '\(').replace(')', '\)').replace('|', '\|')
         basename = os.path.basename(path)[:-4]
         print('traing: %d/%d ' % (i, len(paths)), path)
-        cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process2.py --input %s > logs2/%s_%d.log" %(gpu_id, path, basename, idx)
+        cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process1.py --input %s > logs/%s_%d.log" %(gpu_id, path, basename, idx)
         os.system(cmd_str)
 
 
