@@ -53,14 +53,14 @@ def main():
     print('parallel pose optimize done!')
 
 def func(paths, idx):
-    for i, path in enumerate(paths):
+    for i, path in enumerate(paths[::-1]):
         
         n_gpu = torch.cuda.device_count()
         gpu_id = idx % n_gpu
         path = path.replace('(', '\(').replace(')', '\)').replace('|', '\|')
         basename = os.path.basename(path)[:-4]
-        print('traing: %d/%d ' % (i, len(paths)), path)
-        cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process2.py --input %s > logs2/%s_%d.log" %(gpu_id, path, basename, idx)
+        print('traing %d: %d/%d ' % (idx, i, len(paths)), path)
+        cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process2.py --input %s > logs2/%s.log" %(gpu_id, path, basename)
         os.system(cmd_str)
 
 

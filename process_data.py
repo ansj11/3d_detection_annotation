@@ -19,10 +19,12 @@ def read_url_image(url):
     return mask
 
 def process_seg():
-    seg_json = './metaloop_20241126205435/output.json'
+    # seg_json = './metaloop_20241126205435/output.json'
+    seg_json = './metaloop_20241126210108/output.json'
     with open(seg_json, 'r') as f:
         lines = [json.loads(line) for line in f.readlines()]
 
+    index2occluded = {}
     lines = sorted(lines, key=lambda x: os.path.basename(x['image_path']))
     for sample in tqdm(lines):
         results = sample['result']
@@ -34,6 +36,8 @@ def process_seg():
         image = cv2.imread(image_path, -1)
         height, width, _ = image.shape
         
+        basename = os.path.basename(image_path).split('.')[0]
+        index2occluded[basename] = []
         instance = np.zeros_like(image[...,0])
         count = 1
         for result in results:
@@ -53,25 +57,36 @@ def process_seg():
 
             ret, mask = cv2.threshold(np.max(mask, axis=2), 1, 255, cv2.THRESH_BINARY)
             
+            if result.get('tagtype') == 'occlude' or result.get('tagname') == '遮挡车辆_mask':
+                index2occluded[basename].append(count)
             instance[mask > 0] = count
             count += 1
         
         if instance.max() == 0:
             print(image_path, 'no instance')
             continue
-        save_path = image_path.replace('trial_v2', 'masks')[:-3] + 'png'
+        save_path = image_path.replace('trial_v1', 'masks')[:-3] + 'png'
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         cv2.imwrite(save_path, instance)
         
-        show_path = os.path.join('show', os.path.basename(image_path))
-        os.makedirs(os.path.dirname(show_path), exist_ok=True)
-        alpha = instance/instance.max() * 0.7
-        show = image * (1-alpha[...,None]) + alpha[...,None]*np.array([0,255,0])[None,None,:]
-        cv2.imwrite(show_path, show)
+        # show_path = os.path.join('show', os.path.basename(image_path))
+        # os.makedirs(os.path.dirname(show_path), exist_ok=True)
+        # for idx in index2occluded[basename]:
+        #     alpha = (instance == idx) * 0.7
+        #     image = image * (1-alpha[...,None]) + alpha[...,None]*np.array([0,255,0])[None,None,:]
+        # # alpha = instance/instance.max() * 0.7
+        # # image = image * (1-alpha[...,None]) + alpha[...,None]*np.array([0,255,0])[None,None,:]
+        # cv2.imwrite(show_path, image)
+        
+    json_path = os.path.join(os.path.dirname(seg_json), 'occluded.json')
+    with open(json_path, 'w') as f:
+        json.dump(index2occluded, f, indent=4, ensure_ascii=False)
+    
         
 
 def process_brand():
-    path = "./infos/crop_brand_v2.json"
+    # path = "./infos/crop_brand_v2.json"
+    path = "./infos_v1/crop_brand_v1.json"
     with open(path, 'r') as f:
         lines = [json.loads(line) for line in f.readlines()]
     
@@ -98,12 +113,17 @@ def process_brand():
             
             brand_dict[frame_id][track_id] = [brand, subbrand, year]
 
-    save_path = './infos/brand_dict_v2.json'
+    # save_path = './infos/brand_dict_v2.json'
+    save_path = './infos_v1/brand_dict_v1.json'
     with open(save_path, 'w') as f:
         json.dump(brand_dict, f, indent=4, ensure_ascii=False)
     
 def process_color():
-    path = "./infos/result_color.json"
+    # path = "./infos/result_color.json"
+    # save_path = './infos/color_dict_v2.json'
+    path = "./infos_v1/trial_v1_batch1.json"
+    save_path = './infos_v1/color_dict_v1.json'
+
     tagid2color = {
         501001001: '蓝',
         501001002: '灰',
@@ -120,7 +140,11 @@ def process_color():
     }
     with open(path, 'r') as f:
         lines = [json.loads(line) for line in f.readlines()]
-        
+    
+    path = "./infos_v1/trial_v1_batch2.json"
+    with open(path, 'r') as f:
+        lines += [json.loads(line) for line in f.readlines()]
+
     color_dict = {}
     for sample in tqdm(lines):
         image_path = sample['image']
@@ -145,7 +169,6 @@ def process_color():
         color_dict[frame_id][track_id] = tagid2color[tagid]
     
     print(len(color_dict), '0000007' in color_dict)
-    save_path = './infos/color_dict_v2.json'
     with open(save_path, 'w') as f:
         json.dump(color_dict, f, indent=4, ensure_ascii=False)
     
@@ -216,10 +239,22 @@ def process_trackid():
         
 
 def process_infos():
-    path = './metaloop_20241126205435/metaloop_data/trial_v2/*jpg'
+    # path = './metaloop_20241126205435/metaloop_data/trial_v2/*jpg'
+    # bbox_file = './infos/trial_v2_runtime_2024_10_15_output_bbox_5010_car.txt'
+    # color_file = './infos/color_dict_v2.json'
+    # brand_file = './infos/brand_dict_v2.json'
+    # kpts_file = './infos/kps_trial_v2.json'
+    # save_path = './infos/infos_dict_v2.json'
+
+    path = './metaloop_20241126210108/metaloop_data/trial_v1/*jpg'
+    bbox_file = './infos_v1/trial_v1_runtime_2024_10_15_output_bbox_5010_car.txt'
+    color_file = './infos_v1/color_dict_v1.json'
+    brand_file = './infos_v1/brand_dict_v1.json'
+    kpts_file = './infos_v1/kps_trial_v1_batch1.json'
+    save_path = './infos_v1/infos_dict_v1.json'
+
     image_paths = sorted(glob(path))
     
-    bbox_file = './infos/trial_v2_runtime_2024_10_15_output_bbox_5010_car.txt'
     bboxes = np.loadtxt(bbox_file, delimiter=',')
     
     bbox_dict = {}
@@ -229,21 +264,24 @@ def process_infos():
             bbox_dict[frame_id] = {}
         bbox_dict[frame_id][int(track_id)] = bbox[2:6].tolist()    # xywh
         
-    color_file = './infos/color_dict_v2.json'
     with open(color_file, 'r') as f:
         color_dict = json.load(f)
 
-    brand_file = './infos/brand_dict_v2.json'
     with open(brand_file, 'r') as f:
         brand_dict = json.load(f)
     
-    brand_file = './infos/kps_trial_v2.json'
-    with open(brand_file, 'r') as f:
+    with open(kpts_file, 'r') as f:
         kpts_data = json.load(f)
-    
+    kpts_file = './infos_v1/kps_trial_v1_batch2.json'
+    print(len(kpts_data))
+    with open(kpts_file, 'r') as f:
+        kpts_data2 = json.load(f)
+    kpts_data.update(kpts_data2)
+    print(len(kpts_data), len(kpts_data2))
+    set_trace()
     kpts_dict = {}
     for key in kpts_data.keys():
-        track_id, frame_id = [x for x in key.split('_')]
+        track_id, frame_id = [x for x in key.split('.')[0].split('_')]
         if frame_id not in kpts_dict:
             kpts_dict[frame_id] = {}
 
@@ -259,7 +297,6 @@ def process_infos():
         #     pose_data = json.load(f)
         # key = basename.split('.')[0]
         # pose_dict = {k.split('_')[0]: v for k, v in pose_data[key][0].items()}
-        
         if basename not in color_dict:
             print(basename, 'not in color_dict')
             continue
@@ -288,23 +325,17 @@ def process_infos():
             track_dict[track_id]['bbox'] = bbox
         
         infos_dict[image_path] = track_dict
-        # infos_dict[image_path] = {
-        #     'frame_id': frame_id,
-        #     # 'pose': pose_dict,
-        #     'mask_path': image_path.replace('trial_v2', 'masks').replace('jpg', 'png'),
-        #     'bbox': bbox_dict[frame_id],
-        #     'color': color_dict[basename],
-        #     'brand': brand_dict[basename],
-        #     'kpts': kpts_dict[basename],
-        #     "tracks": track_dict,
-        # }
     
-    save_path = './infos/infos_dict_v2.json'
-    # with open(save_path, 'w') as f:
-    #     json.dump(infos_dict, f, indent=4, ensure_ascii=False)
+    with open(save_path, 'w') as f:
+        json.dump(infos_dict, f, indent=4, ensure_ascii=False)
 
 def find_best_intr():
-    path = './infos/infos_dict_v2.json'
+    # path = './infos/infos_dict_v2.json'
+    # save_path = './infos/best_list_v2.txt'
+
+    path = './infos_v1/infos_dict_v1.json'
+    save_path = './infos_v1/best_list_v1.txt'    
+    
     with open(path, 'r') as f:
         infos_dict = json.load(f)
     
@@ -338,7 +369,6 @@ def find_best_intr():
     
     best_list = sorted(best_list, key=lambda x: x[1], reverse=True)
     print(best_list)
-    save_path = './infos/best_list_v2.txt'
     with open(save_path, 'w') as f:
         f.writelines([str(line) + '\n' for line in best_list])
             
@@ -349,10 +379,11 @@ def brand_list(path):
         car_dir = os.path.join(path, dir)
         for color in os.listdir(car_dir):
             sparse_dir = os.path.join(car_dir, color)
-            # image_dir = os.path.join(sparse_dir, 'images/*.jpg')
+            image_dir = os.path.join(sparse_dir, 'images/*.jpg')
             # image_list = glob(image_dir)
             # num = len(image_list)
             # if num > 50:
+            #     sfm_paths.append(sparse_dir)
             sfm_paths.append(sparse_dir)
     
     return sfm_paths
@@ -453,9 +484,69 @@ def remove_logs2():
         
         
 
-# def move_poses():
-#     path = ""
-#             os.move(log_path, )
+def merge_proses():
+    path = "metaloop_20241126205435/metaloop_data"
+    dirs = ['poses_v1', 'poses_v2_old', 'poses_v3', 'poses_v4']
+    img_paths = sorted(glob(os.path.join(path, 'trial_v2/*jpg')))
+    for img_path in img_paths:
+        basename = os.path.basename(img_path).split('.')[0] + '.json'
+        tgt_path = os.path.join(path, 'poses', basename)
+        os.makedirs(os.path.dirname(tgt_path), exist_ok=True)
+        if os.path.exists(tgt_path):
+            with open(tgt_path, 'r') as f:
+                data_dict = json.load(f)
+        else:
+            data_dict = {}
+        for pose_dir in dirs:
+            src_path = os.path.join(path, pose_dir, basename)
+            if not os.path.exists(src_path):
+                continue
+            with open(src_path, 'r') as f:
+                try:
+                    new_dict = json.load(f)
+                except:set_trace()
+            
+            for track_id in new_dict.keys():
+                if track_id not in data_dict:
+                    data_dict[track_id] = new_dict[track_id]
+                else:
+                    for kkey in new_dict[track_id].keys():
+                        if not isinstance(new_dict[track_id][kkey]['pose'][0], list):
+                            continue
+                        if kkey not in data_dict[track_id]:
+                            data_dict[track_id][kkey] = new_dict[track_id][kkey]
+                            img_path = src_path[:-5] + '%s.png' % kkey
+                            imgname = os.path.basename(img_path)
+                            if os.path.exists(img_path):
+                                shutil.move(img_path, os.path.join(path, 'poses', imgname))
+                        elif isinstance(new_dict[track_id][kkey]['loss'], list):
+                            if isinstance(data_dict[track_id][kkey]['loss'], list):
+                                data_loss = data_dict[track_id][kkey]['loss'][0]
+                            else:
+                                data_loss = data_dict[track_id][kkey]['loss']
+                                
+                            if new_dict[track_id][kkey]['loss'][0] < data_loss:
+                                data_dict[track_id][kkey] = new_dict[track_id][kkey]
+                                img_path = src_path[:-5] + '%s.png' % kkey
+                                imgname = os.path.basename(img_path)
+                                if os.path.exists(img_path):
+                                    shutil.move(img_path, os.path.join(path, 'poses', imgname))
+                        else:
+                            if isinstance(data_dict[track_id][kkey]['loss'], list):
+                                data_loss = data_dict[track_id][kkey]['loss'][0]
+                            else:
+                                data_loss = data_dict[track_id][kkey]['loss']
+
+                            if new_dict[track_id][kkey]['loss'] < data_loss:
+                                data_dict[track_id][kkey] = new_dict[track_id][kkey]
+                                img_path = src_path[:-5] + '%s.png' % kkey
+                                imgname = os.path.basename(img_path)
+                                if os.path.exists(img_path):
+                                    shutil.move(img_path, os.path.join(path, 'poses', imgname))
+                        
+        with open(tgt_path, 'w') as f:
+            json.dump(data_dict, f, indent=4, ensure_ascii=False)
+            
     
 
 if __name__ == '__main__':
@@ -467,4 +558,5 @@ if __name__ == '__main__':
     # find_best_intr()
     # process_kpts3d()
     # search_best_intr()
-    remove_logs2()
+    # remove_logs2()
+    merge_proses()

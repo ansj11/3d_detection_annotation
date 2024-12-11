@@ -60,30 +60,18 @@ gaussian_PipeP  = PipelineParams(parser)
 gaussian_OptimP = OptimizationParams(parser)
 parser.add_argument("--input", type=str, default='',
                         help="input path")
-parser.add_argument("--fx", type=str, default=3690,
+parser.add_argument("--fx", type=str, default=3630,
                         help="input path")
-parser.add_argument("--fy", type=str, default=3690,
+parser.add_argument("--fy", type=str, default=3600,
                         help="input path")
 args = parser.parse_args()
 
-MSELoss = torch.nn.MSELoss(reduction='mean')
-L1Loss = torch.nn.L1Loss(reduction='mean')
+MSELoss = torch.nn.MSELoss(reduction='none')
+L1Loss = torch.nn.L1Loss(reduction='none')
 SSIM_METRIC = SSIM(data_range=1, size_average=True, channel=3) # channel=1 for grayscale images
-MS_SSIM_METRIC = MS_SSIM(data_range=1, size_average=True, channel=3)
-SSILoss = ScaleAndShiftInvariantLoss(alpha=0.5, scales=1)
+# MS_SSIM_METRIC = MS_SSIM(data_range=1, size_average=True, channel=3)
+# SSILoss = ScaleAndShiftInvariantLoss(alpha=0.5, scales=1)
 
-
-def get_bbox(bbox, scale, height, width):
-    x0, y0, w, h = bbox
-    maxhw = max(h, w) * scale
-    th, tw = maxhw, maxhw
-    cx, cy = x0+w/2, y0+h/2
-    x0 = int(max(0, cx - tw/2))
-    x1 = int(min(width, cx + tw/2))
-    y0 = int(max(0, cy - th/2))
-    y1 = int(min(height-1, cy + th/2))
-    
-    return x0, y0, x1, y1
 
 def xywh2xyxy(bbox, height, width):
     x0, y0, w, h = bbox
@@ -92,19 +80,6 @@ def xywh2xyxy(bbox, height, width):
     
     return [int(x) for x in [x0, y0, x1, y1]]
 
-def get_mask(mask):
-    indices = np.unique(mask)
-    max_area = 0
-    max_idx = -1
-    for idx in indices:
-        if idx == 0:
-            continue
-        area = (mask == idx).sum()
-        if area > max_area:
-            max_area = area
-            max_idx = idx
-
-    return (mask == max_idx).astype(np.uint8) * 255
 
 
 def get_mask2(mask, xyxy):
@@ -126,11 +101,11 @@ def get_mask2(mask, xyxy):
         ymax = np.minimum(y1, y3)  # 右下角的纵坐标
         overlap = max(0, xmax - xmin) * max(0, ymax - ymin)
         iou = overlap / (s1 + s2 - overlap)
-        if iou > max_area:
+        if iou > max_area and iou > 0.2:
             max_area = iou
             max_idx = idx
 
-    return (mask == max_idx).astype(np.uint8) * 255
+    return (mask == max_idx).astype(np.uint8) * 255, max_idx
 
 def get_kpts3d(kpts3d_dict, brand, subbrand):
     for key in kpts3d_dict.keys():
@@ -156,7 +131,12 @@ def main(mode='bbox', debug=True, padding_pixel=0):
     path = os.path.join(root, 'infos/kpts3d_dict.json')
     with open(path, 'r') as f:
         kpts3d_dict = json.load(f)
-        
+
+    occlude_path = "metaloop_20241126205435/occluded.json"
+    with open(occlude_path, 'r') as f:
+        occlude_dict = json.load(f)
+    occlude_list = occlude_dict[basename]
+
     track_dict = infos_dict[key]
     
     image = cv2.imread(img_path, -1)
@@ -177,43 +157,37 @@ def main(mode='bbox', debug=True, padding_pixel=0):
         color = result['color']
         bbox = result['bbox']
         brand, subbrand, year = result['brand']
-        # if brand == '奇瑞': set_trace()
-        # kpts2d = adjust_coordinates(result['kpts'])
+
         kpts2d = result['kpts']
         kpts2d = np.array(kpts2d)
         kpts2d[:,0] += bbox[0]
         kpts2d[:,1] += bbox[1]
         brand_str = '%s_%s_%s' % (brand, subbrand, year)
-        # if max(bbox[-2:]) <= 160:
-        #      continue
-        # if brand not in ['领克', '哈弗', '宝马', '日产']:
-        #     continue
-        # if subbrand not in ['宝马3系', '轩逸']:
-        #     continue
+        if max(bbox[-2:]) <= 50:
+             continue
+
         print(bbox[-2:], brand_str)
         xyxy = xywh2xyxy(bbox, height, width)
         x0, y0, x1, y1 = xyxy
         crop = image[y0:y1, x0:x1]
         rgba = np.zeros((height, width, 4), dtype='uint8')
         rgba[y0:y1, x0:x1, :3] = crop
-        alpha = get_mask2(mask, xyxy)
+        alpha, max_idx = get_mask2(mask, xyxy)
         rgba[..., -1] = alpha
-
-        if not isinside(alpha):
-            print('not inside', brand_str)
+        
+        if not isinside(alpha) or alpha.max() == 0:
+            print('not inside or no mask', brand_str, alpha.max())
             continue
-        # if "一汽_森雅R7_2017款" != brand_str:
-        #     continue
+
+        occlude = False
         dilate = cv2.dilate(alpha[y0:y1, x0:x1], np.ones((3,3), np.uint8), iterations=2)
         indices = np.unique(mask[y0:y1, x0:x1][dilate > 0])
-        if len(indices) <= 2:
-            print("not occluded mask", brand_str)
-            continue
+        if len(indices) > 2 or max_idx in occlude_list:
+            print("is occluded mask", brand_str)
+            occlude = True
         
         pc_dirs = search_car_brand(sfm_list, brand, subbrand, color)
-        # if brand == '比亚迪':
-        #     # pc_dirs = ["/gemini/data-2/cars/2dgs/比亚迪-秦PLUS_2021款-DM-i-55KM-旗舰型/雪域白"]
-        #     pc_dirs = ["/gemini/data-2/cars/2dgs/比亚迪-秦PLUS_2023款-冠军版-EV-610KM卓越型/雪域白"]
+
         for pc_dir in pc_dirs:
             if not os.path.exists(pc_dir):
                 print(pc_dir, 'not exists...', brand_str)
@@ -258,7 +232,7 @@ def main(mode='bbox', debug=True, padding_pixel=0):
             image_tensor = rgba_tensor[:-1].float() * mask_tensor
             
             query = {'xywh': bbox, 'xyxy': xyxy, 'image': image, 'brand': [brand, subbrand, color], 
-                    'track_id': track_id, 'kpts2d': kpts2d, 'kpts3d': kpts3d, 'name': gs_dir}
+                    'track_id': track_id, 'kpts2d': kpts2d, 'kpts3d': kpts3d, 'name': gs_dir, 'occlude': occlude}
             queries.append(query)
             images.append(image_tensor)
             masks.append(mask_tensor)
@@ -277,7 +251,7 @@ def main(mode='bbox', debug=True, padding_pixel=0):
         ], dtype=np.float32)
     FovX = focal2fov(cameraMatrix[0,0], pW)
     FovY = focal2fov(cameraMatrix[1,1], pH)
-    init_cameras = []
+
     image = (sum(images) / (sum(masks)+1e-6)).permute(1,2,0).cpu().numpy()
     render_image = image.copy() * 255
     pool = []
@@ -289,7 +263,10 @@ def main(mode='bbox', debug=True, padding_pixel=0):
         for i, pt in enumerate(points2d):
             x, y = np.round(pt).astype('int')
             cv2.circle(render_image, (x, y), 3, (255, 0, 0), -1)
+        flag, rvec, tvec = cv2.solvePnP(points3d, points2d, cameraMatrix, distCoeffs, flags=cv2.SOLVEPNP_ITERATIVE)
         flag, rvecs, tvecs, ret = cv2.solvePnPGeneric(points3d[[3,0,1,2]], points2d[[3,0,1,2]], cameraMatrix, distCoeffs, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+        rvecs = list(rvecs) + [rvec]
+        tvecs = list(tvecs) + [tvec]
         best_R, best_T = None, None
         best_iou, best_mask, best_dist = 0.0, None, 1e6
         mask = masks[idx].squeeze().cpu().numpy()
@@ -329,7 +306,7 @@ def main(mode='bbox', debug=True, padding_pixel=0):
         init_camera = GS_Camera2D(R=R.T, T=T[:,0], FoVx=FovX, FoVy=FovY,
                     image=image_tensor, colmap_id=0, uid=0, image_name=subbrand, gt_alpha_mask=None, data_device=device)
 
-        query = GS_Refiner(images[idx:idx+1], masks[idx:idx+1], [init_camera], gaussians=gaussians, device=device, bboxes=bboxes[idx:idx+1], query=query)
+        GS_Refiner(images[idx:idx+1], masks[idx:idx+1], [init_camera], gaussians=gaussians, device=device, bboxes=bboxes[idx:idx+1], query=query)
 
     json_path = img_path.replace('trial_v2', 'poses_v2')[:-3] + 'json'
     os.makedirs(os.path.dirname(json_path), exist_ok=True)
@@ -345,9 +322,12 @@ def main(mode='bbox', debug=True, padding_pixel=0):
         name = query['name']
         if track_id not in dic:
             dic[track_id] = {}
-        if name not in dic[track_id] or dic[track_id][name]['loss'] > loss:
+        if name not in dic[track_id] or \
+            not isinstance(dic[track_id][name]['loss'], list) or \
+            (isinstance(dic[track_id][name]['loss'], list) and \
+            (dic[track_id][name]['loss'][0] > loss[0] or dic[track_id][name]['loss'][1] > loss[1])):
             dic[track_id][name] = {'pose': pose, 'loss': loss}
-            cv2.imwrite(json_path[:-5] + '%s.png' % name, query['render'])
+            cv2.imwrite(json_path[:-5] + '%s.png' % name, query['render'][...,::-1])
     
     with open(json_path, 'w') as f:
         json.dump(dic, f, indent=4, ensure_ascii=False)
@@ -359,8 +339,8 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
     
     gaussians.initialize_pose(init_cameras) # initialize 0
     x, y, w, h = bboxes[0]
-    ratio = 1.0 if max(h, w) > 100 else 0.5
-    print(init_cameras[0].image_name, [h, w], ratio)
+    ratio = 0.5 if max(h, w) > 100 else 0.1
+    print(init_cameras[0].image_name, [h, w], ratio, CFG.START_LR, query['occlude'])
     optimizer = optim.AdamW([{'params': [gaussians._delta_R], 'lr': CFG.START_LR*0.5*ratio, 'name': 'rotation'}, 
                              {'params': [gaussians._delta_T], 'lr': CFG.START_LR*ratio, 'name': 'translation'}, ], lr=0.0)
     # lr_scheduler = CosineAnnealingWarmupRestarts(optimizer, CFG.MAX_STEPS,
@@ -368,41 +348,38 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
     #                                             max_lr=CFG.START_LR, 
     #                                             min_lr=CFG.END_LR)
     iter_losses = list()
-    MAX_STEPS = max(1000, CFG.MAX_STEPS)
-    best_RT, min_loss = None, 1e6
+    best_RT, min_loss = None, [1e6, 1e6]
     best_img = None
-    for iter_step in range(MAX_STEPS):  # 100
-        if iter_step == MAX_STEPS * 1 / 2:
-            for param_group in optimizer.param_groups:
-                if param_group["name"] == "rotation":
-                    param_group['lr'] = CFG.START_LR*0.1
-                if param_group["name"] == "intrinsic":
-                    param_group['lr'] = CFG.START_LR*0.0
+    for iter_step in range(1, CFG.MAX_STEPS+1):  # 100
+        # if iter_step % 50 == 0:
+        #     for param_group in optimizer.param_groups:
+        #         if param_group["name"] in ["rotation", 'translation']:
+        #             param_group['lr'] *= 0.5
 
         idx, target_img, mask, init_camera = 0, images[0], masks[0], init_cameras[0]
         # ret = GS_Renderer(init_camera, gaussians, gaussian_PipeP, gaussian_BG)
         ret = GS_Renderer2D(init_camera, gaussians, gaussian_PipeP, gaussian_BG, idx=idx)
         unmasked = ret['render'].clone()
-        if iter_step >= MAX_STEPS * 0.2:
+        if (iter_step >= CFG.MAX_STEPS * 0.4 and query['occlude']) or iter_step >= CFG.MAX_STEPS - 20:
             ret['render'][masks[idx].expand_as(ret['render']) <= 0.5] = 0
             ret['rend_alpha'][masks[idx].expand_as(ret['rend_alpha']) <= 0.5] = 0
         render_img = ret['render']
-        render_depth = ret['surf_depth']
         render_mask = ret['rend_alpha']
 
-        if CFG.USE_MATCH:
+        loss = 0
+        if iter_step < CFG.MAX_STEPS * 0.0 and max(h, w) > 200:
             resz_h, resz_w = 600, 800
+            def find_non1_region(mask):
+                non1_indices = torch.where(mask > 0)
+                min_y, min_x = torch.min(non1_indices[-2]), torch.min(non1_indices[-1])
+                max_y, max_x = torch.max(non1_indices[-2]), torch.max(non1_indices[-1])
+                return min_y.item(), min_x.item(), max_y.item(), max_x.item()
             with torch.inference_mode():
-                def find_non1_region(mask):
-                    non1_indices = torch.where(mask > 0)
-                    min_y, min_x = torch.min(non1_indices[-2]), torch.min(non1_indices[-1])
-                    max_y, max_x = torch.max(non1_indices[-2]), torch.max(non1_indices[-1])
-                    return min_y.item(), min_x.item(), max_y.item(), max_x.item()
-                bounds = find_non1_region(render_mask + mask)
-                croped_render_img = render_img[:, bounds[0]:bounds[2], bounds[1]:bounds[3]]
-                resized_render_img = transforms.Resize((resz_w, resz_h))(croped_render_img)
+                bounds = find_non1_region(ret['rend_alpha'] + mask)
+                croped_render_img = ret['render'][:, bounds[0]:bounds[2], bounds[1]:bounds[3]]
+                resized_render_img = transforms.Resize((resz_h, resz_w))(croped_render_img)
                 croped_target_img = target_img[:, bounds[0]:bounds[2], bounds[1]:bounds[3]]
-                resized_target_img = transforms.Resize((resz_w, resz_h))(croped_target_img)
+                resized_target_img = transforms.Resize((resz_h, resz_w))(croped_target_img)
                 input_dict = {
                     "image0": K.color.rgb_to_grayscale(resized_render_img[None, ...]),
                     "image1": K.color.rgb_to_grayscale(resized_target_img[None, ...])
@@ -411,32 +388,29 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
             mkpts0 = correspondences["keypoints0"].cpu().numpy()    # nx2, xy order
             mkpts1 = correspondences["keypoints1"].cpu().numpy()
             Fm, inliers = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_MAGSAC, 0.5, 0.999, 100000)
-            inliers = inliers > 0
-            
-            # save for debug
-            fig, ax = plt.subplots()
-
-            draw_LAF_matches(
-                KF.laf_from_center_scale_ori(
-                    torch.from_numpy(mkpts0).view(1, -1, 2),
-                    torch.ones(mkpts0.shape[0]).view(1, -1, 1, 1),
-                    torch.ones(mkpts0.shape[0]).view(1, -1, 1),
-                ),
-                KF.laf_from_center_scale_ori(
-                    torch.from_numpy(mkpts1).view(1, -1, 2),
-                    torch.ones(mkpts1.shape[0]).view(1, -1, 1, 1),
-                    torch.ones(mkpts1.shape[0]).view(1, -1, 1),
-                ),
-                torch.arange(mkpts0.shape[0]).view(-1, 1).repeat(1, 2),
-                K.tensor_to_image(resized_render_img),
-                K.tensor_to_image(resized_target_img),
-                inliers,
-                draw_dict={"inlier_color": (0.2, 1, 0.2), "tentative_color": None, "feature_color": (0.2, 0.5, 1), "vertical": False},
-                fig=fig,
-                ax=ax,
-            )
-            fig.savefig('ansj/%s_%04d_matches.jpg' % (init_camera.image_name, iter_step))
-
+            inliers = inliers[:,0] > 0
+            if iter_step % 10 == 0:
+                fig, ax = plt.subplots()
+                draw_LAF_matches(
+                    KF.laf_from_center_scale_ori(
+                        torch.from_numpy(mkpts0).view(1, -1, 2),
+                        torch.ones(mkpts0.shape[0]).view(1, -1, 1, 1),
+                        torch.ones(mkpts0.shape[0]).view(1, -1, 1),
+                    ),
+                    KF.laf_from_center_scale_ori(
+                        torch.from_numpy(mkpts1).view(1, -1, 2),
+                        torch.ones(mkpts1.shape[0]).view(1, -1, 1, 1),
+                        torch.ones(mkpts1.shape[0]).view(1, -1, 1),
+                    ),
+                    torch.arange(mkpts0.shape[0]).view(-1, 1).repeat(1, 2),
+                    K.tensor_to_image(resized_render_img),
+                    K.tensor_to_image(resized_target_img),
+                    inliers,
+                    draw_dict={"inlier_color": (0.2, 1, 0.2), "tentative_color": None, "feature_color": (0.2, 0.5, 1), "vertical": False},
+                    fig=fig,
+                    ax=ax,
+                )
+                fig.savefig('ansj/%s_%04d_matches.jpg' % (init_camera.image_name, iter_step))
             ## mapping kpts to origin image
             crop_h, crop_w = croped_render_img.shape[-2:]
             mkpts0[:, 0] *= (crop_w / resz_w)
@@ -447,45 +421,51 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
             mkpts0[:, 1] += bounds[0]
             mkpts1[:, 0] += bounds[1]
             mkpts1[:, 1] += bounds[0]
-            
-            ## mapping kpts to 3d points
-            height, width = target_img.shape[-2:]
-            mkpts0_3d = np.zeros((len(mkpts0), 3), dtype=np.float32)
-            render_depth_np = render_depth.detach().cpu().numpy()[0]
-            fx = width / 2 / gaussians._intrinsic[0].detach().cpu().numpy() # np.tan(init_camera.FoVx / 2)
-            fy = height / 2 / gaussians._intrinsic[1].detach().cpu().numpy() # np.tan(init_camera.FoVy / 2)
-            cx, cy = width / 2, height / 2
-            for i, (u, v) in enumerate(mkpts0):
-                try:
-                    z = render_depth_np[int(v), int(u)]
-                except: set_trace()
-                x = (u - cx) * z / fx
-                y = (v - cy) * z / fy
-                mkpts0_3d[i] = [x, y, z]
-            
-    
-        rgb_loss = MSELoss(render_img, target_img).mean() * 1
-        mask_loss = MSELoss(render_mask.float(), mask.float()).mean() * 0.5
-        loss = (rgb_loss + mask_loss) # + depth_loss
+            mkpts0 = mkpts0[inliers,:]
+            mkpts1 = mkpts1[inliers,:]
+            mkpts0 = np.round(mkpts0).astype('int32')
+            height, width = render_img.shape[-2:]
+            uvs = ret['uvs'][:2]
+            sample_uvs = uvs[:, mkpts0[:, 1], mkpts0[:, 0]]
+
+            pred_uvs = torch.from_numpy(mkpts0).to(device).float().T
+            pred_uvs[0] = pred_uvs[0] * 2 / width - 1.0
+            pred_uvs[1] = pred_uvs[1] * 2 / height - 1.0
+
+            gt_uvs = torch.from_numpy(mkpts1).to(device).float().T
+            gt_uvs[0] = gt_uvs[0] * 2 / width - 1.0
+            gt_uvs[1] = gt_uvs[1] * 2 / height - 1.0
+            # set_trace()
+            uv_mask = (sample_uvs.sum(dim=0) > 0)
+            if uv_mask.sum() > 0:
+                flow_loss = (torch.abs(sample_uvs - gt_uvs).sum(dim=0)[uv_mask]).mean()
+                loss += flow_loss
+            else:
+                print("no inlier")
+
+        union_mask = (mask + render_mask.detach()) > 0.5
+        rgb_loss = MSELoss(render_img, target_img).sum()  / (union_mask.sum() + 1e-6)
+        mask_loss = MSELoss(render_mask.float(), mask.float()).sum() / (union_mask.sum() + 1e-6)
+        loss += (rgb_loss + mask_loss * 1.)
         if CFG.USE_SSIM:
             loss  += (1 - SSIM_METRIC(render_img[None, ...], target_img[None, ...])) * 1.0
-        if CFG.USE_MS_SSIM:
-            loss += (1 - MS_SSIM_METRIC(render_img[None, ...], target_img[None, ...])) * 1.0
+        # if CFG.USE_MS_SSIM:
+        #     loss += (1 - MS_SSIM_METRIC(render_img[None, ...], target_img[None, ...])) * 1.0
         
         masked_render = render_img.detach().clone()
         masked_render[mask.expand_as(render_img) <= 0.5] = 0
-        metric_loss = MSELoss(masked_render, target_img).mean() + (1 - SSIM_METRIC(masked_render[None, ...], target_img[None, ...]))
+        metric_loss = MSELoss(masked_render, target_img).sum() / (mask.sum() + 1e-6)
         cat = ((unmasked.detach()+target_img.detach())*0.5).permute(1,2,0).cpu().numpy() * 255
-        if metric_loss < min_loss:
-            min_loss = metric_loss.item()
+        if metric_loss < min_loss[0] or (iter_step >= CFG.EARLY_STOP_MIN_STEPS and loss < min_loss[1]):
+            min_loss = [metric_loss.item(), loss.item()]
             best_img = cat
-            best_RT = gaussians.get_delta_pose.squeeze(0).detach().cpu().numpy()[idx]
+            best_RT = gaussians.get_delta_pose.squeeze(0).detach().cpu().numpy()
         
-        if iter_step % 10 == 0:
-            # save_path = 'ansj/%s_%04d.jpg' % (init_camera.image_name, iter_step/10)
-            save_path = 'ansj/%s_%04d_%d.jpg' % (init_camera.image_name, iter_step, idx)
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            cv2.imwrite(save_path, cat[...,::-1])
+        # if iter_step % 10 == 0:
+        #     # save_path = 'ansj/%s_%04d.jpg' % (init_camera.image_name, iter_step/10)
+        #     save_path = 'ansj/%s_%04d_%d.jpg' % (init_camera.image_name, iter_step, idx)
+        #     os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        #     cv2.imwrite(save_path, cat[...,::-1])
         
         total_loss = loss.item()
         total_metric = metric_loss.item()
@@ -503,8 +483,9 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
         
         if iter_step % 10 == 0:
             print(iter_step, total_loss, total_metric)
+        
+        torch.cuda.empty_cache()
     
-    height, width = target_img.shape[-2:]
     print(iter_step, total_loss, total_metric)
     
     query['pose'] = best_RT.tolist()
@@ -611,6 +592,8 @@ def search_car_brand(sfm_list, brand, subbrand, color):
     sfm_paths = []
     for sfm_path in sfm_list:
         if brand in sfm_path and subbrand in sfm_path and color in sfm_path:
+            img_paths = os.listdir(os.path.join(sfm_path.replace('2dgs', 'sfm'), 'images'))
+            if len(img_paths) < 40: continue
             sfm_paths.append(sfm_path)
     return sfm_paths
 
