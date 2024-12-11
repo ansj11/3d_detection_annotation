@@ -26,8 +26,8 @@ def main():
     filter_paths = []
     for image_path in image_paths:
         json_path = image_path.replace('trial_v2', 'poses_v1')[:-3] + 'json'
-        if os.path.exists(json_path):
-            continue
+        # if os.path.exists(json_path):
+        #     continue
         filter_paths.append(image_path)
     
     
@@ -59,8 +59,8 @@ def func(paths, idx):
         gpu_id = idx % n_gpu
         path = path.replace('(', '\(').replace(')', '\)').replace('|', '\|')
         basename = os.path.basename(path)[:-4]
-        print('traing: %d/%d ' % (i, len(paths)), path)
-        cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process1.py --input %s > logs/%s_%d.log" %(gpu_id, path, basename, idx)
+        print('traing %d: %d/%d ' % (idx, i, len(paths)), path)
+        cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process1.py --input %s > logs/%s.log" %(gpu_id, path, basename)
         os.system(cmd_str)
 
 

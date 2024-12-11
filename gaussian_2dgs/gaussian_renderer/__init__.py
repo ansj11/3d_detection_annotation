@@ -11,7 +11,7 @@
 
 import torch
 import math
-from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+from diff_surfel_rasterization_flow import GaussianRasterizationSettings, GaussianRasterizer
 from ..gaussian_model import GaussianModel
 from ..utils.sh_utils import eval_sh
 from ..utils.point_utils import depth_to_normal
@@ -136,6 +136,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     
     # get depth distortion map
     render_dist = allmap[6:7]
+    uvs = allmap[7:]
 
     # psedo surface attributes
     # surf depth is either median or expected by setting depth_ratio to 1 or 0
@@ -156,6 +157,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             'rend_dist': render_dist,
             'surf_depth': surf_depth,
             'surf_normal': surf_normal,
+            'uvs': uvs
     })
 
     return rets
