@@ -68,15 +68,6 @@ SSIM_METRIC = SSIM(data_range=1, size_average=True, channel=3) # channel=1 for g
 # SSILoss = ScaleAndShiftInvariantLoss(alpha=0.5, scales=1)
 
 
-def xywh2xyxy(bbox, height, width):
-    x0, y0, w, h = bbox
-    x1 = min(x0 + w, width)
-    y1 = min(y0 + h, height)
-    
-    return [int(x) for x in [x0, y0, x1, y1]]
-
-
-
 def get_mask2(mask, xyxy):
     x0, y0, x1, y1 = xyxy
     indices = np.unique(mask[y0:y1, x0:x1])
@@ -102,68 +93,44 @@ def get_mask2(mask, xyxy):
 
     return (mask == max_idx).astype(np.uint8) * 255, max_idx
 
-def get_kpts3d(kpts3d_dict, brand, subbrand):
-    for key in kpts3d_dict.keys():
-        if brand in key and subbrand in key:
-            return np.array(kpts3d_dict[key])
-    return None
 
 """process all objects without occlusion"""
 def main(mode='bbox', debug=True, padding_pixel=0):
     root = "/gemini/data-2/segment/"
 
-    path = os.path.join(root, 'infos/infos_dict_v2.json')
+    path = args.input
     with open(path, 'r') as f:
-        infos_dict = json.load(f)
+        track_dict = json.load(f)
 
-    img_path = args.input
-    key = img_path.replace('./segment', '')
-    basename = os.path.basename(img_path).split('.')[0]
-    if key not in infos_dict:
-        print('image not in infos_dict', key)
-        return
+    img_path = path.replace("dicts", "trial_v2")[:-4] + 'jpg'
 
-    path = os.path.join(root, 'infos/kpts3d_dict.json')
-    with open(path, 'r') as f:
-        kpts3d_dict = json.load(f)
+    json_path = img_path.replace('trial_v2', 'poses_v3')[:-3] + 'json'
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
 
-    occlude_path = "metaloop_20241126205435/occluded.json"
-    with open(occlude_path, 'r') as f:
-        occlude_dict = json.load(f)
-    occlude_list = occlude_dict[basename]
-
-    track_dict = infos_dict[key]
-    
     image = cv2.imread(img_path, -1)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     height, width = image.shape[:2]
     mask_path = img_path.replace('trial_v2', 'masks').replace('jpg', 'png')
     mask = cv2.imread(mask_path, 0)
     
-    sfm_path = os.path.join(root, 'cars/2dgs')
-    sfm_list = brand_list(sfm_path)
     fx, fy = args.fx, args.fy
     cx, cy = 1344.0, 760.0
     device = torch.device('cuda')
     
-    cameras, queries, omasks = [], [], []
-    images, masks, bboxes, gs_paths = [], [], [], []
+    dic = {}
+    if os.path.exists(json_path):
+        with open(json_path, 'r') as f:
+            dic = json.load(f)
     for track_id, result in track_dict.items():
-        color = result['color']
         bbox = result['bbox']
-        brand, subbrand, year = result['brand']
-        # if "荣威" not in brand:
-        #     continue
-        kpts2d = result['kpts']
-        kpts2d = np.array(kpts2d)
-        kpts2d[:,0] += bbox[0]
-        kpts2d[:,1] += bbox[1]
-        brand_str = '%s_%s_%s' % (brand, subbrand, year)
-        if max(bbox[-2:]) <= 50:
-             continue
-
-        print(bbox[-2:], brand_str)
-        xyxy = xywh2xyxy(bbox, height, width)
+        brand, subbrand, year, color = result['brand']
+        # kpts2d = np.array(result['kpts'])
+        if max(bbox[-2:]) <= 40:
+            print(bbox[-2:], " <= 50", result['brand'])
+            continue
+        if "一汽" not in brand:
+            continue
+        xyxy = result['xyxy']
         x0, y0, x1, y1 = xyxy
         crop = image[y0:y1, x0:x1]
         rgba = np.zeros((height, width, 4), dtype='uint8')
@@ -172,45 +139,34 @@ def main(mode='bbox', debug=True, padding_pixel=0):
         rgba[..., -1] = alpha
         
         if not isinside(alpha) or alpha.max() == 0:
-            print('not inside or no mask', brand_str, alpha.max())
+            print('not inside or no mask', result['brand'], alpha.max())
             continue
 
-        occlude = False
+        occlude = result['occlude']
         occlude_mask = np.zeros_like(alpha)
         dilate = cv2.dilate(alpha[y0:y1, x0:x1], np.ones((3,3), np.uint8), iterations=2)
         indices = np.unique(mask[y0:y1, x0:x1][dilate > 0])
-        
-        if len(indices) > 2 or max_idx in occlude_list:
-            print("is occluded mask", brand_str)
+
+        if len(indices) > 2:
+            print("is occluded mask", result['brand'])
             for idx in indices[1:]:
                 if idx == max_idx: continue
                 occlude_mask[y0:y1, x0:x1] = (mask[y0:y1, x0:x1] == idx).astype(np.uint8) * 255
             occlude = True
-        if max_idx in occlude_list:
-            print("in occluded list", brand_str)
-            occlude = True
         
-        pc_dirs = search_car_brand(sfm_list, brand, subbrand, color)
+        FovX, FovY = result['fovxy']
+        queries = result['queries']
+        for query in queries:
+            gs_dir = query['gs_path']
 
-        for pc_dir in pc_dirs[:1]:
-            if not os.path.exists(pc_dir):
-                print(pc_dir, 'not exists...', brand_str)
+            gs_path = os.path.join(gs_dir, 'point_cloud/iteration_7000/point_cloud.ply')
+            if not os.path.exists(gs_path):
+                print("not exists...", gs_dir, result['brand'])
                 continue
 
-            pc_path = os.path.join(pc_dir, 'point_cloud/iteration_7000/point_cloud.ply')
-            gs_dir = '_'.join(pc_dir.split('/')[-2:])
-            if not os.path.exists(pc_path):
-                print("not exists...", pc_path, brand_str)
-                continue
-
-            brand_key = pc_dir.split('/')[-2]
-            if brand_key not in kpts3d_dict:
-                print("not exists kpts3d...", key)
-                continue
-            kpts3d = np.array(kpts3d_dict[brand_key])
+            # kpts3d = np.array(queries['kpts3d'])
             
             pH, pW = height, width
-            input = rgba.copy()
             if padding_pixel > 0:
                 padding_pixel = int(min(padding_pixel, max(height, width) * 0.2))
                 print('padding pixel: ', padding_pixel)
@@ -219,161 +175,75 @@ def main(mode='bbox', debug=True, padding_pixel=0):
                 top = int(round(height / 2 + padding_pixel - cy))
                 down = int(padding_pixel * 2 - top)  # wrap affine左移，则cx右移
                 pad_image = np.zeros((height+padding_pixel*2, width+padding_pixel*2, 4), dtype='uint8')
-                pad_image[top:-down, left:-right] = input
-                input = pad_image
-                # cv2.imwrite('ansj/%s.jpg' % brand, input)
+                pad_image[top:-down, left:-right] = rgba
+                rgba = pad_image
+                cv2.imwrite('ansj/%s.jpg' % brand, image)
                 print(left, right, top, down)
-                pH, pW = image.shape[:2]
+                pH, pW = rgba.shape[:2]
                 cx += left
                 cy += top
                 bbox[0] += left
                 bbox[1] += top
-                kpts2d[:,0] += left
-                kpts2d[:,1] += top
+                # kpts2d[:,0] += left
+                # kpts2d[:,1] += top
                 xyxy = [xyxy[0] + left, xyxy[1] + top, xyxy[2] + left, xyxy[3] + top]
             
-            rgba_tensor = torch.from_numpy(input/255.0).to(device).permute(2, 0, 1)
+            gaussians = GaussianModel2D(3)
+            gaussians.load_ply([gs_path])
+            rgba_tensor = torch.from_numpy(rgba/255.0).to(device).permute(2, 0, 1)
             mask_tensor = rgba_tensor[-1:].float()
             image_tensor = rgba_tensor[:-1].float() * mask_tensor
             omask_tensor = torch.from_numpy(occlude_mask/255).unsqueeze(0).float()
-            
-            query = {'xywh': bbox, 'xyxy': xyxy, 'image': input, 'brand': [brand, subbrand, color], 
-                    'track_id': track_id, 'kpts2d': kpts2d, 'kpts3d': kpts3d, 'name': gs_dir, 'occlude': occlude}
-            queries.append(query)
-            images.append(image_tensor)
-            masks.append(mask_tensor)
-            omasks.append(omask_tensor)
-            bboxes.append(bbox)
-            gs_paths.append(pc_path)
 
-    if len(queries) == 0:
-        print("no valid query", img_path)
-        return
-    print(len(gs_paths), [query['name'] for query in queries])
-
-    cameraMatrix = np.array([
-            [fx, 0, cx],
-            [0, fy, cy],
-            [0,  0, 1.]
-        ], dtype=np.float32)
-    FovX = focal2fov(cameraMatrix[0,0], pW)
-    FovY = focal2fov(cameraMatrix[1,1], pH)
-
-    image = (sum(images) / (sum(masks)+1e-6)).permute(1,2,0).cpu().numpy()
-    render_image = image.copy() * 255
-    pool = []
-    for idx, query in enumerate(queries):
-        distCoeffs = np.zeros((5), dtype=np.float32)
-        points2d = query['kpts2d']
-        points3d = query['kpts3d']
-        subbrand = query['brand'][1]
-        for i, pt in enumerate(points2d):
-            x, y = np.round(pt).astype('int')
-            cv2.circle(render_image, (x, y), 3, (255, 0, 0), -1)
-        flag, rvec, tvec = cv2.solvePnP(points3d, points2d, cameraMatrix, distCoeffs, flags=cv2.SOLVEPNP_ITERATIVE)
-        flag, rvecs, tvecs, ret = cv2.solvePnPGeneric(points3d[[3,0,1,2]], points2d[[3,0,1,2]], cameraMatrix, distCoeffs, flags=cv2.SOLVEPNP_IPPE_SQUARE)
-        rvecs = list(rvecs) + [rvec]
-        tvecs = list(tvecs) + [tvec]
-        best_R, best_T = None, None
-        best_iou, best_mask, best_dist = 0.0, None, 1e6
-        mask = masks[idx].squeeze().cpu().numpy()
-        ys, xs = np.where(mask > 0.5)
-        centerx, centery = xs.mean(), ys.mean()
-        gaussians = GaussianModel2D(3)
-        gaussians.load_ply(gs_paths[idx:idx+1])
-        for index, (rvec, tvec) in enumerate(zip(rvecs, tvecs)):
-            R, _ = cv2.Rodrigues(rvec)
-            T = tvec / 1000.0
-            render_mask = np.zeros_like(mask)
-            xyz = gaussians._xyz[0].detach().cpu().numpy() @ R.T + T[:,0]
-            ix = xyz[:,0] / xyz[:,-1] * cameraMatrix[0,0] + cx
-            iy = xyz[:,1] / xyz[:,-1] * cameraMatrix[1,1] + cy
-            valid_uv = (ix >= 0) * (ix < pW) * (iy >= 0) * (iy < pH)
-            if valid_uv.sum() == 0:
-                print("project point not in image")
-                continue
-            ix, iy = ix[valid_uv].astype('int'), iy[valid_uv].astype('int')
-            try:
-                render_mask[iy, ix] = 1.0
-            except: set_trace()
-            overlap = (mask * render_mask).sum()
-            iou = overlap / (mask.sum() + render_mask.sum() - overlap + 1e-6)
-            renderx, rendery = ix.mean(), iy.mean()
-            dist = np.sqrt((centerx - renderx)**2 + (centery - rendery)**2)
-            if iou > best_iou or (dist < best_dist and iou < 0.1):
-                best_iou = iou
-                best_dist = dist
-                best_R, best_T = R, T
-                best_mask = render_mask
-        if best_T is None: 
-            print("no valid pose", query['brand'])
-            continue
-        render_image[best_mask > 0.5,:] = render_image[best_mask > 0.5,:] * 0.5 + 0.5 * np.array([0, 255, 0])
-        R, T = best_R, best_T
-        init_camera = GS_Camera2D(R=R.T, T=T[:,0], FoVx=FovX, FoVy=FovY,
+            R = np.array(query['R']).astype(np.float32)
+            T = np.array(query['T']).astype(np.float32)
+            init_camera = GS_Camera2D(R=R.T, T=T, FoVx=FovX, FoVy=FovY,
                     image=image_tensor, colmap_id=0, uid=0, image_name=subbrand, gt_alpha_mask=None, data_device=device)
-        
-        GS_Refiner(images[idx:idx+1], masks[idx:idx+1], omasks[idx:idx+1], [init_camera], gaussians=gaussians, device=device, bboxes=bboxes[idx:idx+1], query=query)
-        
-    #     thread = threading.Thread(target=GS_Refiner, args=(images[idx:idx+1], masks[idx:idx+1], [init_camera], gaussians, device, bboxes[idx:idx+1], query), name=f"thread_{i}")
-    #     thread.start()
-    #     pool.append(thread)
 
-    # for thread in pool:
-    #     thread.join()        
-        
-    save_path = img_path.replace('trial_v2', 'pnp')
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    cv2.imwrite(save_path, render_image[...,::-1])
-
-    json_path = img_path.replace('trial_v2', 'tmp')[:-3] + 'json'
-    os.makedirs(os.path.dirname(json_path), exist_ok=True)
-
-    dic = {}
-    if os.path.exists(json_path):
-        with open(json_path, 'r') as f:
-            dic = json.load(f)
-    for idx, query in enumerate(queries):
-        pose = query['pose']
-        loss = query['loss']
-        track_id = query['track_id']
-        name = query['name']
-        if track_id not in dic:
-            dic[track_id] = {}
-        if name not in dic[track_id] or \
-            not isinstance(dic[track_id][name]['loss'], list) or \
-            (isinstance(dic[track_id][name]['loss'], list) and \
-            (dic[track_id][name]['loss'][0] > loss[0] or dic[track_id][name]['loss'][1] > loss[1])):
-            dic[track_id][name] = {'pose': pose, 'loss': loss}
-            cv2.imwrite(json_path[:-5] + '%s.png' % name, query['render'][...,::-1])
+            query['occlude'] = occlude
+            GS_Refiner(image_tensor, mask_tensor, omask_tensor, init_camera, gaussians=gaussians, device=device, bbox=bbox, query=query)
+ 
+            pose = query['pose']
+            loss = query['loss']
+            track_id = query['track_id']
+            name = query['name']
+            if track_id not in dic:
+                dic[track_id] = {}
+            save_path = json_path[:-5] + '%s.png' % name
+            rend_path = save_path.replace("poses_v3", "render")
+            rgba_path = save_path.replace("poses_v3", "rgba")
+            os.makedirs(os.path.dirname(rend_path), exist_ok=True)            
+            os.makedirs(os.path.dirname(rgba_path), exist_ok=True)
+            if name not in dic[track_id] or (name in dic[track_id] and loss[0] < dic[track_id][name]['loss'][0]):
+                dic[track_id][name] = {'pose': pose, 'loss': loss}
+                cv2.imwrite(save_path, query['cat'][...,::-1])
+                cv2.imwrite(rend_path, query['render'][...,::-1])
+                cv2.imwrite(rgba_path, rgba[...,[2,1,0,3]])
     
     with open(json_path, 'w') as f:
         json.dump(dic, f, indent=4, ensure_ascii=False)
     
 
-def GS_Refiner(images, masks, omasks, init_cameras, gaussians, device=None, bboxes=None, query=None):
-    color = images[0][masks[0].expand_as(images[0]) > 0.5].mean()
+def GS_Refiner(target_img, mask, omask, init_camera, gaussians, device=None, bbox=None, query=None):
+    color = target_img[mask.expand_as(target_img) > 0.5].mean()
     black_bg = color > 0.5 or query['occlude']
 
     if black_bg:
         gaussian_BG = torch.zeros((3), device=device)
     else:
         gaussian_BG = torch.ones((3), device=device)
-        images[0][masks[0].expand_as(images[0]) < 0.5] = 1.0
+        target_img[mask.expand_as(target_img) < 0.5] = 1.0
     print("bg color: ", gaussian_BG)
-    
-    gaussians.initialize_pose(init_cameras) # initialize 0
-    x, y, w, h = bboxes[0]
-    ratio = 1 # 0.5 if max(h, w) > 100 else 0.1
-    height, width = images[0].size()[-2:]
-    CFG.START_LR = (0.1 * masks[0].sum() / height / width).item()
-    print(init_cameras[0].image_name, [h, w], ratio, CFG.START_LR, query['occlude'])
-    optimizer = optim.AdamW([{'params': [gaussians._delta_R], 'lr': CFG.START_LR*0.5*ratio, 'name': 'rotation'}, 
-                             {'params': [gaussians._delta_T], 'lr': CFG.START_LR*ratio, 'name': 'translation'}, ], lr=0.0)
-    # lr_scheduler = CosineAnnealingWarmupRestarts(optimizer, CFG.MAX_STEPS,
-    #                                             warmup_steps=CFG.WARMUP, 
-    #                                             max_lr=CFG.START_LR, 
-    #                                             min_lr=CFG.END_LR)
+    CFG.START_LR = 0.03
+    gaussians.initialize_pose([init_camera]) # initialize 0
+    x, y, w, h = bbox
+    print(init_camera.image_name, [h, w], CFG.START_LR, query['occlude'], omask.max())
+    optimizer = optim.AdamW([{'params': [gaussians._delta_R], 'lr': CFG.START_LR*0.5, 'name': 'rotation'}, 
+                             {'params': [gaussians._delta_T], 'lr': CFG.START_LR, 'name': 'translation'}, ], lr=0.0)
+    lr_scheduler = CosineAnnealingWarmupRestarts(optimizer, CFG.MAX_STEPS,
+                                                warmup_steps=CFG.WARMUP, 
+                                                max_lr=CFG.START_LR, 
+                                                min_lr=CFG.END_LR)
     iter_losses = list()
     best_RT, min_loss = None, [1e6, 1e6]
     best_img = None
@@ -384,17 +254,21 @@ def GS_Refiner(images, masks, omasks, init_cameras, gaussians, device=None, bbox
                 if param_group["name"] in ["translation", "rotation"]:
                     param_group['lr'] *= 0.1
                     
-        idx, target_img, mask, omask, init_camera = 0, images[0], masks[0], omasks[0], init_cameras[0]
+        idx = 0
         # ret = GS_Renderer(init_camera, gaussians, gaussian_PipeP, gaussian_BG)
         ret = GS_Renderer2D(init_camera, gaussians, gaussian_PipeP, gaussian_BG, idx=idx)
         unmasked = ret['render'].clone()
         render_img = ret['render']
         render_mask = ret['rend_alpha']
-        render_img[omask.expand_as(render_img) >= 0.5] = 0 if black_bg else 1.0
-        render_mask[omask.expand_as(render_mask) >= 0.5] = 0
+        if omask.max() > 0:
+            render_img[omask.expand_as(render_img) >= 0.5] = 0 if black_bg else 1.0
+            render_mask[omask.expand_as(render_mask) >= 0.5] = 0
+        elif (iter_step >= CFG.MAX_STEPS * 0.4 and query['occlude']) or iter_step >= CFG.MAX_STEPS - 20:
+            render_img[mask.expand_as(render_img) <= 0.5] = 0
+            render_mask[mask.expand_as(render_mask) <= 0.5] = 0
 
         loss = 0
-        if iter_step < CFG.MAX_STEPS * 0.0 and max(h, w) > 200:
+        if iter_step < CFG.MAX_STEPS * 0.4 and max(h, w) > 200:
             resz_h, resz_w = 600, 800
             def find_non1_region(mask):
                 non1_indices = torch.where(mask > 0)
@@ -483,15 +357,16 @@ def GS_Refiner(images, masks, omasks, init_cameras, gaussians, device=None, bbox
         masked_render = render_img.detach().clone()
         masked_render[union_mask.expand_as(render_img) <= 0.5] = 0 if black_bg else 1.0
         metric_loss = ((masked_render - target_img)**2).sum() / (union_mask.sum() + 1e-6)
-        cat = ((unmasked.detach()+target_img.detach())*0.5).permute(1,2,0).cpu().numpy() * 255
         if metric_loss < min_loss[0] or (iter_step >= CFG.EARLY_STOP_MIN_STEPS and loss < min_loss[1]):
             min_loss = [metric_loss.item(), loss.item()]
-            best_img = cat
+            best_img = torch.cat([ret['rend_alpha'].detach(), unmasked], dim=0)
+            best_cat = (unmasked.detach()+target_img.detach())*0.5
             best_RT = gaussians.get_delta_pose.squeeze(0).detach().cpu().numpy()
         
         if iter_step % 10 == 0:
+            cat = ((unmasked.detach()+target_img.detach())*0.5).permute(1,2,0).cpu().numpy() * 255
             # save_path = 'ansj/%s_%04d.jpg' % (init_camera.image_name, iter_step/10)
-            save_path = 'ansj/%s_%04d_%d.jpg' % (init_camera.image_name, iter_step, idx)
+            save_path = 'ansj/%s_%04d.jpg' % (init_camera.image_name, iter_step)
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             cv2.imwrite(save_path, cat[...,::-1])
         
@@ -518,7 +393,8 @@ def GS_Refiner(images, masks, omasks, init_cameras, gaussians, device=None, bbox
     
     query['pose'] = best_RT.tolist()
     query['loss'] = min_loss
-    query['render'] = best_img
+    query['cat'] = best_cat.permute(1,2,0).cpu().numpy() * 255
+    query['render'] = best_img.detach().permute(1,2,0).cpu().numpy() * 255
 
     return query
 

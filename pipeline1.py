@@ -8,13 +8,13 @@ import numpy as np
 from tqdm import tqdm
 import torch
 from glob import glob
-from multiprocessing import Process, Lock
+from multiprocessing import Process, Pool
 from pdb import set_trace
 from PIL import Image
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--input", type=str, default='./metaloop_20241126205435/metaloop_data/trial_v2/*jpg',
+parser.add_argument("--input", type=str, default='./metaloop_20241126210108/metaloop_data/trial_v1/*jpg',
                         help="input path")
 args = parser.parse_args()
 
@@ -25,9 +25,9 @@ def main():
     image_paths = sorted(glob(root))
     filter_paths = []
     for image_path in image_paths:
-        json_path = image_path.replace('trial_v2', 'poses_v1')[:-3] + 'json'
-        # if os.path.exists(json_path):
-        #     continue
+        json_path = image_path.replace('trial_v1', 'poses')[:-3] + 'json'
+        if os.path.exists(json_path):
+             continue
         filter_paths.append(image_path)
     
     
@@ -38,17 +38,22 @@ def main():
     total_num = 8 * n_gpu
     length = len(image_paths)
     interval = int(length/total_num) + 1
-    pool = []
+
+    pool = Pool(processes=total_num)
     for i in range(total_num):
         start = i * interval
         end = min((i+1) * interval, length)
-        thread = Process(target=func, args=(image_paths[start:end], i), name=f"thread_{i}")
-        pool.append(thread)
-        
-    for thread in pool:
-        thread.start()
-    for thread in pool:
-        thread.join()
+        pool.apply_async(func, (image_paths[start:end], i))
+        # thread = Process(target=func, args=(image_paths[start:end], i), name=f"thread_{i}")
+        # pool.append(thread)
+    
+    pool.close()
+    pool.join()
+    
+    # for thread in pool:
+    #     thread.start()
+    # for thread in pool:
+    #     thread.join()
     
     print('parallel pose optimize done!')
 
@@ -61,7 +66,14 @@ def func(paths, idx):
         basename = os.path.basename(path)[:-4]
         print('traing %d: %d/%d ' % (idx, i, len(paths)), path)
         cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process1.py --input %s > logs/%s.log" %(gpu_id, path, basename)
-        os.system(cmd_str)
+        # os.system(cmd_str)
+        result = subprocess.run(cmd_str, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        # 检查命令是否成功执行
+        if result.returncode == 0:
+            print("Command executed successfully")
+        else:
+            print("Command failed with return code", result.returncode)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ from PIL import Image
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--input", type=str, default='./metaloop_20241126205435/metaloop_data/trial_v2/*jpg',
+parser.add_argument("--input", type=str, default='./metaloop_20241126210108/metaloop_data/dicts/*json',
                         help="input path")
 args = parser.parse_args()
 
@@ -27,7 +27,7 @@ def main():
     print("chosen images:", len(image_paths))
     
     n_gpu = torch.cuda.device_count()
-    total_num = 4 * n_gpu
+    total_num = 7 * n_gpu
     length = len(image_paths)
     interval = int(length/total_num) + 1
     pool = []
@@ -50,9 +50,9 @@ def func(paths, idx):
         n_gpu = torch.cuda.device_count()
         gpu_id = idx % n_gpu
         path = path.replace('(', '\(').replace(')', '\)').replace('|', '\|')
-        basename = os.path.basename(path)[:-4]
+        basename = os.path.basename(path)[:-5]
         print('traing %d: %d/%d ' % (idx, i, len(paths)), path)
-        cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process3.py --input %s > logs3/%s_%d.log" %(gpu_id, path, basename, idx)
+        cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process3.py --input %s > logs3/%s.log" %(gpu_id, path, basename)
         os.system(cmd_str)
 
 

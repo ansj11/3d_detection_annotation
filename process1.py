@@ -19,7 +19,7 @@ from gaussian_object.cameras import Camera as GS_Camera
 from gaussian_object.utils.graphics_utils import focal2fov
 from gaussian_object.gaussian_model import GaussianModel
 import config as CFG
-from pytorch_msssim import ssim, ms_ssim, SSIM, MS_SSIM
+from pytorch_msssim import SSIM, MS_SSIM
 from gaussian_2dgs.arguments import ModelParams, PipelineParams, OptimizationParams
 import torchvision.transforms as transforms
 
@@ -27,18 +27,13 @@ import torchvision.transforms as transforms
 from gaussian_2dgs.gaussian_model import GaussianModel as GaussianModel2D
 from gaussian_2dgs.gaussian_renderer import render as GS_Renderer2D
 from gaussian_2dgs.scene.cameras import Camera as GS_Camera2D
-from gaussian_2dgs.utils.graphics_utils import focal2fov as focal2fov2D
 
-from misc_utils.losses import ScaleAndShiftInvariantLoss
-from transformers import pipeline
-from PIL import Image
-import PIL
 import  kornia.feature as KF
 import kornia as K
 from kornia_moons.viz import draw_LAF_matches
 # from distort import ImageDistortionModel
 
-matcher = KF.LoFTR(pretrained='outdoor').cuda()
+# matcher = KF.LoFTR(pretrained='outdoor').cuda()
 model_configs = {
         'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
         'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
@@ -151,7 +146,7 @@ def main(mode='bbox', debug=True, padding_pixel=0):
     cx, cy = 1344.0, 760.0
     device = torch.device('cuda')
     
-    cameras, queries = [], []
+    cameras, queries, omasks = [], [], []
     images, masks, bboxes, gs_paths = [], [], [], []
     for track_id, result in track_dict.items():
         color = result['color']
@@ -180,10 +175,17 @@ def main(mode='bbox', debug=True, padding_pixel=0):
             continue
 
         occlude = False
+        occlude_mask = np.zeros_like(alpha)
         dilate = cv2.dilate(alpha[y0:y1, x0:x1], np.ones((3,3), np.uint8), iterations=2)
         indices = np.unique(mask[y0:y1, x0:x1][dilate > 0])
         if len(indices) > 2 or max_idx in occlude_list:
             print("is occluded mask", brand_str)
+            for idx in indices[1:]:
+                if idx == max_idx: continue
+                occlude_mask[y0:y1, x0:x1] = (mask[y0:y1, x0:x1] == idx).astype(np.uint8) * 255
+            occlude = True
+        if max_idx in occlude_list:
+            print("in occluded list", brand_str)
             occlude = True
         
         pc_dirs = search_car_brand(sfm_list, brand, subbrand, color)
@@ -193,7 +195,7 @@ def main(mode='bbox', debug=True, padding_pixel=0):
                 print(pc_dir, 'not exists...', brand_str)
                 continue
 
-            pc_path = os.path.join(pc_dir, 'point_cloud/iteration_30000/point_cloud.ply')
+            pc_path = os.path.join(pc_dir, 'point_cloud/iteration_7000/point_cloud.ply')
             gs_dir = '_'.join(pc_dir.split('/')[-2:])
             if not os.path.exists(pc_path):
                 print("not exists...", pc_path, brand_str)
@@ -230,12 +232,14 @@ def main(mode='bbox', debug=True, padding_pixel=0):
             rgba_tensor = torch.from_numpy(rgba/255.0).to(device).permute(2, 0, 1)
             mask_tensor = rgba_tensor[-1:].float()
             image_tensor = rgba_tensor[:-1].float() * mask_tensor
+            omask_tensor = torch.from_numpy(occlude_mask/255).unsqueeze(0).float()
             
             query = {'xywh': bbox, 'xyxy': xyxy, 'image': image, 'brand': [brand, subbrand, color], 
                     'track_id': track_id, 'kpts2d': kpts2d, 'kpts3d': kpts3d, 'name': gs_dir, 'occlude': occlude}
             queries.append(query)
             images.append(image_tensor)
             masks.append(mask_tensor)
+            omasks.append(omask_tensor)
             bboxes.append(bbox)
             gs_paths.append(pc_path)
 
@@ -306,7 +310,7 @@ def main(mode='bbox', debug=True, padding_pixel=0):
         init_camera = GS_Camera2D(R=R.T, T=T[:,0], FoVx=FovX, FoVy=FovY,
                     image=image_tensor, colmap_id=0, uid=0, image_name=subbrand, gt_alpha_mask=None, data_device=device)
         
-        GS_Refiner(images[idx:idx+1], masks[idx:idx+1], [init_camera], gaussians=gaussians, device=device, bboxes=bboxes[idx:idx+1], query=query)
+        GS_Refiner(images[idx:idx+1], masks[idx:idx+1], omasks[idx:idx+1], [init_camera], gaussians=gaussians, device=device, bboxes=bboxes[idx:idx+1], query=query)
         
     #     thread = threading.Thread(target=GS_Refiner, args=(images[idx:idx+1], masks[idx:idx+1], [init_camera], gaussians, device, bboxes[idx:idx+1], query), name=f"thread_{i}")
     #     thread.start()
@@ -344,9 +348,15 @@ def main(mode='bbox', debug=True, padding_pixel=0):
         json.dump(dic, f, indent=4, ensure_ascii=False)
     
 
-def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None, query=None):
+def GS_Refiner(images, masks, omasks, init_cameras, gaussians, device=None, bboxes=None, query=None):
+    color = images[0][masks[0].expand_as(images[0]) > 0.5].mean()
     
-    gaussian_BG = torch.zeros((3), device=device)
+    if color > 0.5:
+        gaussian_BG = torch.zeros((3), device=device)
+    else:
+        gaussian_BG = torch.ones((3), device=device)
+        images[0][masks[0].expand_as(images[0]) < 0.5] = 1.0
+    print("bg color: ", gaussian_BG)
     
     gaussians.initialize_pose(init_cameras) # initialize 0
     x, y, w, h = bboxes[0]
@@ -369,18 +379,17 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
         #        if param_group["name"] == "intrinsic":
         #            param_group['lr'] = CFG.START_LR*0.0
 
-        idx, target_img, mask, init_camera = 0, images[0], masks[0], init_cameras[0]
+        idx, target_img, mask, omask, init_camera = 0, images[0], masks[0], omasks[0], init_cameras[0]
         # ret = GS_Renderer(init_camera, gaussians, gaussian_PipeP, gaussian_BG)
         ret = GS_Renderer2D(init_camera, gaussians, gaussian_PipeP, gaussian_BG, idx=idx)
         unmasked = ret['render'].clone()
-        if (iter_step >= CFG.MAX_STEPS * 0.4 and query['occlude']) or iter_step >= CFG.MAX_STEPS - 20:
-            ret['render'][masks[idx].expand_as(ret['render']) <= 0.5] = 0
-            ret['rend_alpha'][masks[idx].expand_as(ret['rend_alpha']) <= 0.5] = 0
         render_img = ret['render']
         render_mask = ret['rend_alpha']
+        render_img[omask.expand_as(render_img) >= 0.5] = 0 if color > 0.5 else 1.0
+        render_mask[omask.expand_as(render_mask) >= 0.5] = 0
 
         loss = 0
-        if iter_step < CFG.MAX_STEPS * 0.4 and max(h, w) > 200:
+        if iter_step < CFG.MAX_STEPS * 0.0 and max(h, w) > 200:
             resz_h, resz_w = 600, 800
             def find_non1_region(mask):
                 non1_indices = torch.where(mask > 0)
@@ -402,7 +411,7 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
             mkpts1 = correspondences["keypoints1"].cpu().numpy()
             Fm, inliers = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_MAGSAC, 0.5, 0.999, 100000)
             inliers = inliers[:,0] > 0
-            if iter_step % 10 == 0:
+            """if iter_step % 10 == 0:
                 fig, ax = plt.subplots()
                 draw_LAF_matches(
                     KF.laf_from_center_scale_ori(
@@ -424,6 +433,7 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
                     ax=ax,
                 )
                 fig.savefig('ansj/%s_%04d_matches.jpg' % (init_camera.image_name, iter_step))
+            """
             ## mapping kpts to origin image
             crop_h, crop_w = croped_render_img.shape[-2:]
             mkpts0[:, 0] *= (crop_w / resz_w)
@@ -457,7 +467,8 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
                 print("no inlier")
 
         union_mask = (mask + render_mask.detach()) > 0.5
-        rgb_loss = MSELoss(render_img, target_img).sum()  / (union_mask.sum() + 1e-6)
+        inter_mask = (mask * render_mask.detach()) > 0.5
+        rgb_loss = MSELoss(render_img, target_img).sum() / (union_mask.sum() + 1e-6)
         mask_loss = MSELoss(render_mask.float(), mask.float()).sum() / (union_mask.sum() + 1e-6)
         loss += (rgb_loss + mask_loss * 1.)
         if CFG.USE_SSIM:
@@ -466,7 +477,7 @@ def GS_Refiner(images, masks, init_cameras, gaussians, device=None, bboxes=None,
         #     loss += (1 - MS_SSIM_METRIC(render_img[None, ...], target_img[None, ...])) * 1.0
         
         masked_render = render_img.detach().clone()
-        masked_render[mask.expand_as(render_img) <= 0.5] = 0
+        masked_render[mask.expand_as(render_img) <= 0.5] = 0 if color > 0.5 else 1.0
         metric_loss = MSELoss(masked_render, target_img).sum() / (mask.sum() + 1e-6)
         cat = ((unmasked.detach()+target_img.detach())*0.5).permute(1,2,0).cpu().numpy() * 255
         if metric_loss < min_loss[0] or (iter_step >= CFG.EARLY_STOP_MIN_STEPS and loss < min_loss[1]):
@@ -608,6 +619,7 @@ def search_car_brand(sfm_list, brand, subbrand, color):
             img_paths = os.listdir(os.path.join(sfm_path.replace('2dgs', 'sfm'), 'images'))
             if len(img_paths) < 40: continue
             sfm_paths.append(sfm_path)
+
     return sfm_paths
 
 def brand_list(path):

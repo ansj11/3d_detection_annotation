@@ -10,7 +10,7 @@ from glob import glob
 import matplotlib.pyplot as plt
 import shutil
 from pdb import set_trace
-
+from plyfile import PlyData, PlyElement
 
 def read_url_image(url):
     response = requests.get(url)
@@ -547,7 +547,158 @@ def merge_proses():
         with open(tgt_path, 'w') as f:
             json.dump(data_dict, f, indent=4, ensure_ascii=False)
             
+
+def find_nonconvex_contour():
+    # 读取图像
+    mask = cv2.imread('zmask2.jpg', 0)
+    image = cv2.imread('zimg.jpg', -1)
+    # 二值化
+    _, binary = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+
+    # 寻找轮廓
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # 选择最大的轮廓（假设车辆轮廓是最大的）
+    max_contour = max(contours, key=cv2.contourArea)
+
+    # 计算凸包
+    hull = cv2.convexHull(max_contour, returnPoints=False)
+
+    # 检测凹凸缺陷
+    defects = cv2.convexityDefects(max_contour, hull)
+
+    max_len = 0
+    for i in range(defects.shape[0]):
+        s, e, f, d = defects[i, 0]
+        start = tuple(max_contour[s][0])
+        end = tuple(max_contour[e][0])
+        far = tuple(max_contour[f][0])
+        
+        # length = np.linalg.norm(np.array(start) - np.array(end))
+        length = (e - s) if e > s else (e + len(max_contour) - s)
+        
+        if length > max_len:
+            max_len = length
+            start0 = tuple(max_contour[s][0])
+            end0 = tuple(max_contour[e][0])
+            far0 = tuple(max_contour[f][0])
+            print(start, end, far, defects[i, 0], length)
+            
+        # 绘制缺陷
+    cv2.line(image, start0, end0, [0, 255, 0], 2)
+    cv2.circle(image, far0, 1, [0, 0, 255], -1)
+
+    cv2.imwrite("zcnt.jpg", image)
+
+def find_inner_contour():
+    mask = cv2.imread('zmask2.jpg', 0)
+    image = cv2.imread('zimg.jpg', -1)
+    _, binary = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
+    
+def remove_2dgs_pc():
+    root = './cars/2dgs'
+    paths = []
+    for dir in os.listdir(root):
+        car_dir = os.path.join(root, dir)
+        for color in os.listdir(car_dir):
+            ply_path = os.path.join(car_dir, color, 'point_cloud/iteration_30000/point_cloud.ply')
+            if not os.path.exists(ply_path):
+                continue
+            paths.append(ply_path)
+    
+    for path in tqdm(paths):
+        remove_pc(path)
+
+def remove_pc(path):
+    print(path)
+    plydata = PlyData.read(path)
+    xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
+                    np.asarray(plydata.elements[0]["y"]),
+                    np.asarray(plydata.elements[0]["z"])),  axis=1)
+    
+    opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
+    
+    features_dc = np.zeros((xyz.shape[0], 3))
+    features_dc[:, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
+    features_dc[:, 1] = np.asarray(plydata.elements[0]["f_dc_1"])
+    features_dc[:, 2] = np.asarray(plydata.elements[0]["f_dc_2"])
+    
+    extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
+    extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
+    features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
+    for idx, attr_name in enumerate(extra_f_names):
+        features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
+    
+    scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
+    scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
+    scales = np.zeros((xyz.shape[0], len(scale_names)))
+    for idx, attr_name in enumerate(scale_names):
+        scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
+
+    rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
+    rot_names = sorted(rot_names, key = lambda x: int(x.split('_')[-1]))
+    rots = np.zeros((xyz.shape[0], len(rot_names)))
+    for idx, attr_name in enumerate(rot_names):
+        rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
+    
+    mask = xyz[:,-1] > 0.1
+    xyz = xyz[mask]
+    opacities = opacities[mask]
+    features_dc = features_dc[mask]
+    features_extra = features_extra[mask]
+    scales = scales[mask]
+    rots = rots[mask]
+    
+    construct_list_of_attributes = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+    for i in range(features_dc.shape[1]):
+        construct_list_of_attributes.append('f_dc_%d' % i)
+    for i in range(features_extra.shape[1]):
+        construct_list_of_attributes.append('f_rest_%d' % i)
+    construct_list_of_attributes.append('opacity')
+    for i in range(scales.shape[1]):
+        construct_list_of_attributes.append('scale_%d' % i)
+    for i in range(rots.shape[1]):
+        construct_list_of_attributes.append('rot_%d' % i)
+    
+    normals = np.zeros_like(xyz)
+    dtype_full = [(attribute, 'f4') for attribute in construct_list_of_attributes]
+
+    elements = np.empty(xyz.shape[0], dtype=dtype_full)
+    attributes = np.concatenate((xyz, normals, features_dc, features_extra, opacities, scales, rots), axis=1)
+    elements[:] = list(map(tuple, attributes))
+    el = PlyElement.describe(elements, 'vertex')
+    save_path = path.replace("30000", "7000")
+    PlyData([el]).write(save_path)
+
+    
+def crop_images():
+    path = "metaloop_20241126205435/metaloop_data/poses_v3/*png"
+    img_paths = sorted(glob(path))
+    height, width = 1520, 2688
+    for img_path in tqdm(img_paths):
+        img = cv2.imread(img_path)
+        if (height, width) != img.shape[:2]:
+            shutil.copy(img_path, img_path.replace("poses_v3", "crop"))
+            continue
+        # render_path = img_path.replace("poses_v3", "render")
+        # render = cv2.imread(render_path, -1)
+        # rgba_path = img_path.replace("poses_v3", "rgba")
+        # rgba = cv2.imread(rgba_path, -1)
+        # mask = (render[..., 3] + rgba[..., 3] > 0)
+        # ys, xs = np.where(mask > 0)
+        # x0, y0 = xs.min(), ys.min()
+        # x1, y1 = xs.max(), ys.max()
+        # x0 = max(0, x0 - 10)
+        # x1 = min(width-1, x1 + 10)
+        # y0 = max(0, y0 - 10)
+        # y1 = min(height-1, y1 + 10)
+        # crop = img[y0:y1, x0:x1]
+        # save_path = img_path.replace("poses_v3", "crop")
+        # os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        # cv2.imwrite(save_path, crop)
+
 
 if __name__ == '__main__':
     # process_seg()
@@ -559,4 +710,8 @@ if __name__ == '__main__':
     # process_kpts3d()
     # search_best_intr()
     # remove_logs2()
-    merge_proses()
+    # merge_proses()
+    # find_nonconvex_contour()
+    # find_inner_contour()
+    # remove_2dgs_pc()
+    crop_images()
