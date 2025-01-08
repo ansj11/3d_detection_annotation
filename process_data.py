@@ -20,7 +20,8 @@ def read_url_image(url):
 
 def process_seg():
     # seg_json = './metaloop_20241126205435/output.json'
-    seg_json = './metaloop_20241126210108/output.json'
+    # seg_json = './metaloop_20241126210108/output.json'
+    seg_json = './metaloop_20241221102629/output.json'
     with open(seg_json, 'r') as f:
         lines = [json.loads(line) for line in f.readlines()]
 
@@ -65,7 +66,9 @@ def process_seg():
         if instance.max() == 0:
             print(image_path, 'no instance')
             continue
-        save_path = image_path.replace('trial_v1', 'masks')[:-3] + 'png'
+        # save_path = image_path.replace('trial_v1', 'masks')[:-3] + 'png'
+        # save_path = image_path.replace('trial_v2', 'masks')[:-3] + 'png'
+        save_path = image_path.replace('metaloop_data', 'masks')[:-3] + 'png'
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         cv2.imwrite(save_path, instance)
         
@@ -91,6 +94,7 @@ def process_brand():
         lines = [json.loads(line) for line in f.readlines()]
     
     brand_dict = {}
+    count, total = 0, 0
     for sample in lines:
         image_path = sample['image_path']
         basename = os.path.basename(image_path).split('.')[0]
@@ -99,30 +103,36 @@ def process_brand():
         #     set_trace()
         if frame_id not in brand_dict:
             brand_dict[frame_id] = {}
-        for result in sample['result']:
-            if not result or result['datatype'] not in ['extra']:
-                continue
-            
-            for data in result['extraData']:
-                if data['tagname'] == 'brand':
-                    brand = data['tagvalue']
-                elif data['tagname'] =='subbrand':
-                    subbrand = data['tagvalue']
-                elif data['tagname'] == 'year':
-                    year = data['tagvalue']
-            
-            brand_dict[frame_id][track_id] = [brand, subbrand, year]
+        result = sample['result'][1]
+        if not result or result['datatype'] not in ['extra']:
+            count += 1
+            continue
+        
+        for data in result['extraData']:
+            if data['tagname'] == 'brand':
+                brand = data['tagvalue']
+            elif data['tagname'] =='subbrand':
+                subbrand = data['tagvalue']
+            elif data['tagname'] == 'year':
+                year = data['tagvalue']
+        
+        brand_dict[frame_id][track_id] = [brand, subbrand, year]
+        if brand in ['other', 'unknown'] or subbrand in ['other', 'unknown']:
+            count += 1
+        else:
+            total += 1
 
+    print("count: ", count, total, len(lines), len(brand_dict))
     # save_path = './infos/brand_dict_v2.json'
-    save_path = './infos_v1/brand_dict_v1.json'
-    with open(save_path, 'w') as f:
-        json.dump(brand_dict, f, indent=4, ensure_ascii=False)
+    # save_path = './infos_v1/brand_dict_v1.json'
+    # with open(save_path, 'w') as f:
+    #     json.dump(brand_dict, f, indent=4, ensure_ascii=False)
     
 def process_color():
-    # path = "./infos/result_color.json"
-    # save_path = './infos/color_dict_v2.json'
-    path = "./infos_v1/trial_v1_batch1.json"
-    save_path = './infos_v1/color_dict_v1.json'
+    path = "./infos/result_color.json"
+    save_path = './infos/color_dict_v2.json'
+    # path = "./infos_v1/trial_v1_batch1.json"
+    # save_path = './infos_v1/color_dict_v1.json'
 
     tagid2color = {
         501001001: '蓝',
@@ -141,11 +151,12 @@ def process_color():
     with open(path, 'r') as f:
         lines = [json.loads(line) for line in f.readlines()]
     
-    path = "./infos_v1/trial_v1_batch2.json"
-    with open(path, 'r') as f:
-        lines += [json.loads(line) for line in f.readlines()]
+    # path = "./infos_v1/trial_v1_batch2.json"
+    # with open(path, 'r') as f:
+    #     lines += [json.loads(line) for line in f.readlines()]
 
     color_dict = {}
+    count, total = 0, 0
     for sample in tqdm(lines):
         image_path = sample['image']
         basename = os.path.basename(image_path).split('.')[0]
@@ -157,20 +168,24 @@ def process_color():
         for result in sample['result']:
             if result['tagnameid'] not in tagid2color:
                 print('tagnameid not in tagid2color', result['tagnameid'])
+                count += 1
                 continue
             if result['confidence'][0] > confidence:
                 confidence = result['confidence'][0]
                 tagid = result['tagnameid']
         
         if tagid == -1:
+            count += 1
             print('tagid not in valid', tagid)
             continue
+        else:
+            total += 1
         
         color_dict[frame_id][track_id] = tagid2color[tagid]
     
-    print(len(color_dict), '0000007' in color_dict)
-    with open(save_path, 'w') as f:
-        json.dump(color_dict, f, indent=4, ensure_ascii=False)
+    print(len(color_dict), count, total, len(lines))
+    # with open(save_path, 'w') as f:
+    #     json.dump(color_dict, f, indent=4, ensure_ascii=False)
     
     
 def process_trackid():
@@ -251,7 +266,7 @@ def process_infos():
     color_file = './infos_v1/color_dict_v1.json'
     brand_file = './infos_v1/brand_dict_v1.json'
     kpts_file = './infos_v1/kps_trial_v1_batch1.json'
-    save_path = './infos_v1/infos_dict_v1.json'
+    save_path = './infos_v1/infos_dict_v1_filter.json'
 
     image_paths = sorted(glob(path))
     
@@ -278,7 +293,7 @@ def process_infos():
         kpts_data2 = json.load(f)
     kpts_data.update(kpts_data2)
     print(len(kpts_data), len(kpts_data2))
-    set_trace()
+
     kpts_dict = {}
     for key in kpts_data.keys():
         track_id, frame_id = [x for x in key.split('.')[0].split('_')]
@@ -288,6 +303,7 @@ def process_infos():
         kpts_dict[frame_id][track_id] = kpts_data[key]
     
     infos_dict = {}
+    count, total, small = 0, 0, 0
     for image_path in tqdm(image_paths):
         basename = os.path.basename(image_path).split('.')[0]
         frame_id = int(basename)
@@ -312,20 +328,26 @@ def process_infos():
         for track_id in track_ids:
             color = color_dict[basename][track_id]
             brand = brand_dict[basename].get(track_id, ['null', 'null', 'null'])
-            if not brand:
+            if not brand or brand[0] in ['other', 'unknown', 'null']:
                 print(basename, track_id, 'not in brand_dict')
-                # continue
-            if track_id not in track_dict:
-                track_dict[track_id] = {}
+                count += 1
+                continue
             kpts = kpts_dict[basename][track_id]
             bbox = bbox_dict[frame_id][int(track_id)]
+            if max(bbox[2:]) < 50:
+                small += 1
+                continue
+            if track_id not in track_dict:
+                track_dict[track_id] = {}
             track_dict[track_id]['color'] = color
             track_dict[track_id]['brand'] = brand
             track_dict[track_id]['kpts'] = kpts
             track_dict[track_id]['bbox'] = bbox
+            total += 1
         
         infos_dict[image_path] = track_dict
     
+    print(count, total, small, len(image_paths))
     with open(save_path, 'w') as f:
         json.dump(infos_dict, f, indent=4, ensure_ascii=False)
 
@@ -371,20 +393,88 @@ def find_best_intr():
     print(best_list)
     with open(save_path, 'w') as f:
         f.writelines([str(line) + '\n' for line in best_list])
+    
+
+def find_big_cars():
+    paths = sorted(glob('./metaloop_20241126205435/metaloop_data/dicts/*.json'))
+    save_path = './infos/best_list.txt'
+
+    # path = './infos_v1/infos_dict_v1.json'
+    # save_path = './infos_v1/best_list.txt'
+    
+    root = './cars/2dgs'
+    sfm_list = brand_list(root)
+
+
+    count = 0
+    best_list = []
+    image = None
+    for path in tqdm(paths):
+        with open(path, 'r') as f:
+            track_dict = json.load(f)
+        img_path = path.replace('dicts', 'trial_v2').replace('.json', '.jpg')
+        img = cv2.imread(img_path, -1)
+        if image is None:
+            image = np.zeros_like(img)
+        for track_id in track_dict.keys():
+            bbox = track_dict[track_id]['bbox']
+            x, y, w, h = bbox
+            cx, cy = bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2
+            if track_dict[track_id]['occlude']:
+                continue
+            area = bbox[2] * bbox[3]
+            is_overlap = False
+            for item in best_list:
+                if item[0] == path:
+                    continue
+                iou = compute_iou(bbox, item[-1])
+                if iou > 0.:
+                    is_overlap = True
+                    break
+            if is_overlap:
+                continue
+            brand, subbrand, year, color = track_dict[track_id]['brand']
+            sfm_path = search_car_brand(sfm_list, brand, subbrand, color)
+            if not sfm_path:
+                print(path, track_id, brand, color, 'not found in sfm_list')
+                continue
+            count += 1
             
+            best_list.append([path, track_id, area, bbox])
+            image[int(y):int(y+h), int(x):int(x+w)] = img[int(y):int(y+h), int(x):int(x+w)]
+    
+    best_list = sorted(best_list, key=lambda x: x[2], reverse=True)
+    print(best_list)
+    with open(save_path, 'w') as f:
+        f.writelines([str(line) + '\n' for line in best_list])
+    
+    cv2.imwrite(save_path[:-4] + '.jpg', image)
+
+def compute_iou(bbox1, bbox2):
+    x1, y1, w1, h1 = bbox1
+    x2, y2, w2, h2 = bbox2
+    x12, y12 = x1 + w1, y1 + h1
+    x22, y22 = x2 + w2, y2 + h2
+    
+    x_overlap = max(0, min(x12, x22) - max(x1, x2))
+    y_overlap = max(0, min(y12, y22) - max(y1, y2))
+    intersection = x_overlap * y_overlap
+    
+    union = w1 * h1 + w2 * h2 - intersection
+    return intersection / union
 
 def brand_list(path):
     sfm_paths = []
     for dir in os.listdir(path):
         car_dir = os.path.join(path, dir)
         for color in os.listdir(car_dir):
-            sparse_dir = os.path.join(car_dir, color)
+            sparse_dir = os.path.join(car_dir, color).replace("2dgs", "sfm")
             image_dir = os.path.join(sparse_dir, 'images/*.jpg')
-            # image_list = glob(image_dir)
-            # num = len(image_list)
-            # if num > 50:
-            #     sfm_paths.append(sparse_dir)
-            sfm_paths.append(sparse_dir)
+            image_list = glob(image_dir)
+            num = len(image_list)
+            if num > 50:
+                sfm_paths.append(sparse_dir)
+            # sfm_paths.append(sparse_dir)
     
     return sfm_paths
 
@@ -674,30 +764,249 @@ def remove_pc(path):
 
     
 def crop_images():
-    path = "metaloop_20241126205435/metaloop_data/poses_v3/*png"
+    # path = "metaloop_20241126205435/metaloop_data/poses_v3/*png"
+    path = "metaloop_20241126210108/metaloop_data/poses_v3/*png"
     img_paths = sorted(glob(path))
     height, width = 1520, 2688
     for img_path in tqdm(img_paths):
         img = cv2.imread(img_path)
         if (height, width) != img.shape[:2]:
+            save_path = img_path.replace("poses_v3", "crop")
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
             shutil.copy(img_path, img_path.replace("poses_v3", "crop"))
             continue
-        # render_path = img_path.replace("poses_v3", "render")
-        # render = cv2.imread(render_path, -1)
-        # rgba_path = img_path.replace("poses_v3", "rgba")
-        # rgba = cv2.imread(rgba_path, -1)
-        # mask = (render[..., 3] + rgba[..., 3] > 0)
-        # ys, xs = np.where(mask > 0)
-        # x0, y0 = xs.min(), ys.min()
-        # x1, y1 = xs.max(), ys.max()
-        # x0 = max(0, x0 - 10)
-        # x1 = min(width-1, x1 + 10)
-        # y0 = max(0, y0 - 10)
-        # y1 = min(height-1, y1 + 10)
-        # crop = img[y0:y1, x0:x1]
-        # save_path = img_path.replace("poses_v3", "crop")
-        # os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        # cv2.imwrite(save_path, crop)
+        render_path = img_path.replace("poses_v3", "render")
+        render = cv2.imread(render_path, -1)
+        rgba_path = img_path.replace("poses_v3", "rgba")
+        rgba = cv2.imread(rgba_path, -1)
+        mask = (render[..., 3] + rgba[..., 3] > 0)
+        ys, xs = np.where(mask > 0)
+        x0, y0 = xs.min(), ys.min()
+        x1, y1 = xs.max(), ys.max()
+        x0 = max(0, x0 - 10)
+        x1 = min(width-1, x1 + 10)
+        y0 = max(0, y0 - 10)
+        y1 = min(height-1, y1 + 10)
+        crop = img[y0:y1, x0:x1]
+        save_path = img_path.replace("poses_v3", "crop")
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        cv2.imwrite(save_path, crop)
+
+def filter_badcase():
+    # json_path = "cls/metaloop_20241218164942/output.json"
+    json_path = "cls/trial_v1/output.json"
+    with open(json_path, 'r') as f:
+        lines = f.readlines()
+    
+    badpath = json_path.replace("output.json", "error")
+    rightpath = json_path.replace("output.json", "right")
+    middlepath = json_path.replace("output.json", "middle")
+    os.makedirs(badpath, exist_ok=True)
+    os.makedirs(rightpath, exist_ok=True)
+    os.makedirs(middlepath, exist_ok=True)
+    rets = []
+    for line in tqdm(lines):
+        dic = json.loads(line)
+        image_path = dic['image_path']
+        results = dic['result']
+        if len(results) == 0:
+            print(image_path, "has no result")
+            continue
+        result = results[0]
+        # src_path = os.path.join("metaloop_20241126205435", image_path)
+        src_path = os.path.join("metaloop_20241126210108", image_path)
+        if result['tagtype'] == 'error':
+            shutil.copy(src_path, badpath)
+        elif result['tagtype'] == 'middle':
+            shutil.copy(src_path, middlepath)
+        elif result['tagtype'] == 'right':
+            shutil.copy(src_path, rightpath)
+        else:
+            print(image_path, "has unknown tagtype", result['tagtype'])
+        rets.append(str([image_path, result['tagtype']])+'\n')
+    
+    save_path = json_path.replace("output.json", "rets.txt")
+    with open(save_path, 'w') as f:
+        f.writelines(rets)
+
+def process_bbox3d():
+    # root = 'metaloop_20241126205435/metaloop_data/poses_v3'
+    root = 'metaloop_20241126210108/metaloop_data/poses_v3'
+    json_paths = sorted(glob(os.path.join(root, '*.json')))
+    
+    fx, fy = 3630, 3600
+    for json_path in tqdm(json_paths):
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        info_path = json_path.replace('poses_v3', 'dicts')
+        if not os.path.exists(info_path):
+            continue
+        with open(info_path, 'r') as f:
+            info_dict = json.load(f)
+        
+        # img_path = json_path.replace('poses_v3', 'trial_v2').replace('.json', '.jpg')
+        img_path = json_path.replace('poses_v3', 'trial_v1').replace('.json', '.jpg')
+        img = cv2.imread(img_path, -1)
+        height, width = img.shape[:2]
+        
+        bboxes = {}
+        for track_id, track_dict in data.items():
+            loss = np.inf
+            pose, best_key = None, ''
+            
+            for key, value in track_dict.items():
+                error_path = json_path.replace('poses_v3', 'error')[:-5] + '%s.png' % key
+                if os.path.exists(error_path):
+                    print("error image found", img_path, key)
+                    continue
+                if value['loss'][0] < loss:
+                    loss = value['loss'][0]
+                    pose = np.array(value['pose'])
+                    best_key = key
+            if not best_key:
+                print("no key found", img_path, track_id, key)
+                continue
+            color = best_key.split('_')[-1]
+            brand = best_key.replace('_'+color, '')
+            gs_path = os.path.join('cars/2dgs', brand, color, 'point_cloud/iteration_30000/point_cloud.ply')
+            plydata = PlyData.read(gs_path)
+            xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
+                    np.asarray(plydata.elements[0]["y"]),
+                    np.asarray(plydata.elements[0]["z"])),  axis=1)
+            vmin, vmax = xyz.min(axis=0), xyz.max(axis=0)
+            bbox = np.array([   [vmax[0], vmax[1], vmin[2]],
+                                [vmax[0], vmin[1], vmin[2]],
+                                [vmin[0], vmin[1], vmin[2]],
+                                [vmin[0], vmax[1], vmin[2]],
+                                [vmax[0], vmax[1], vmax[2]],
+                                [vmax[0], vmin[1], vmax[2]],
+                                [vmin[0], vmin[1], vmax[2]],
+                                [vmin[0], vmax[1], vmax[2]]   ])
+            angles = rotmat2angle(pose[:3,:3])
+            angles = [float(x) for x in angles]
+            size = vmax - vmin
+            [carL, carW, carH] = [float(x) for x in size]
+            center = bbox[:4].mean(axis=0)
+            car_center = (pose[:3,:3] @ center[:,None] + pose[:3,3:4]).T
+            car_center = [float(x) for x in car_center[0]]
+            
+            # R, Rx, Ry, Rz, T = angle2rotmat(angles, pose[:3,3])
+            
+            # points = (pose[:3,:3] @ bbox.T + pose[:3,3:4]).T
+            # ucoord = (points[:,0] / points[:,2] * fx + width / 2).astype(np.int32)
+            # vcoord = (points[:,1] / points[:,2] * fy + height / 2).astype(np.int32)
+            # uvs = np.stack([ucoord, vcoord], axis=1)
+            
+            # draw_3dbox(img, uvs)
+            # cv2.putText(img, '%d' % (-angles[-1]/np.pi*180), (uvs[0,0], uvs[0,1]), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            
+            occlude = 1 if info_dict[track_id]['occlude'] else 0
+            bbox = [float(x) for x in info_dict[track_id]['xyxy']]
+            alpha = 0.
+            bbox3d = ['car', 0., occlude, alpha, *bbox, carH, carW, carL, *car_center, -angles[-1], pose[:3].tolist()]
+            bboxes[track_id] = bbox3d
+
+        if not bboxes:
+            print("no bbox found......", img_path)
+            continue
+        
+        save_path = json_path.replace('poses_v3', 'images')[:-4]+'jpg'
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        cv2.imwrite(save_path, img)
+        save_path = json_path.replace('poses_v3', 'bbox3d')
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, 'w') as f:
+            json.dump(bboxes, f, indent=4, ensure_ascii=False)
+            
+
+
+def rotmat2angle(R):    # xyz order
+    sy = np.sqrt(R[0,0] * R[0,0] +  R[1,0] * R[1,0])
+    singular = sy < 1e-6
+    if not singular:
+        y = np.arcsin(R[0,2])
+        cy = np.cos(y)
+        if cy < 1e-6:
+            set_trace()
+        x = np.arctan2(-R[1,2]/cy, R[2,2]/cy)
+        z = np.arctan2(-R[0,1]/cy, R[0,0]/cy)
+    else:
+        set_trace()
+        
+    return np.stack([x, y, z], axis=0)
+
+def rotmat2angle2(R):    # xyz order
+    sy = np.sqrt(R[0,0] * R[0,0] +  R[1,0] * R[1,0])
+    singular = sy < 1e-6
+    if not singular:
+        x = np.arctan2(R[2,1] , R[2,2])
+        y = np.arctan2(-R[2,0], sy)
+        z = np.arctan2(R[1,0], R[0,0])
+    else :
+        x = np.arctan2(-R[1,2], R[1,1])
+        y = np.arctan2(-R[2,0], sy)
+        z = 0
+
+    return np.stack([x, y, z], axis=0)
+
+def angle2rotmat(xyz, tvec):
+    x, y, z = xyz
+    Rx = np.array([[1, 0, 0, 0],
+                    [0, np.cos(x), -np.sin(x), 0],
+                    [0, np.sin(x), np.cos(x), 0],
+                    [0, 0, 0, 1]], dtype=np.float32)
+    Ry = np.array([[np.cos(y), 0, np.sin(y), 0],
+                        [0, 1, 0, 0],
+                        [-np.sin(y), 0, np.cos(y), 0],
+                        [0, 0, 0, 1]], dtype=np.float32)
+    Rz = np.array([[np.cos(z), -np.sin(z), 0, 0],
+                        [np.sin(z), np.cos(z), 0, 0],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 1]], dtype=np.float32)
+    T = np.eye(4, dtype=np.float32)
+    T[:3,3] = -tvec
+    R = Rz @ Ry @ Rx @ T
+    return R, Rx, Ry, Rz, T
+
+def draw_3dbox(img, corners, color=(0, 0, 255)):
+    """
+    Draw 3D bbox on the image
+
+    Parameters
+    ----------
+        img : np.ndarray
+
+        corners : np.ndarray, (N, 8, 2), N is the number of 3D bbox corners in image coordinate system
+
+        color : tuple, default (0, 0, 255)
+    
+    Returns
+    -------
+        img : np.ndarray
+
+    Notes
+    -----
+    The corners are returned in the following order for each box:
+    
+        4 -------- 5
+       /|         /|
+      7 -------- 6 .
+      | |        | |
+      . 0 -------- 1
+      |/         |/
+      3 -------- 2
+
+    """
+    # conection relationship of the 3D bbox vertex
+    connection = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]
+    if not isinstance(corners, list):
+        corners = [corners]
+    # draw the 3D bbox on the image
+    for i, corner in enumerate(corners):
+        for j in range(len(connection)):
+            cv2.line(img, (int(corner[connection[j][0]][0]), int(corner[connection[j][0]][1])), (int(corner[connection[j][1]][0]), int(corner[connection[j][1]][1])), color, 2)
+    return img
 
 
 if __name__ == '__main__':
@@ -705,8 +1014,9 @@ if __name__ == '__main__':
     # process_brand()
     # process_color()
     # process_trackid()
-    # process_infos()
+    process_infos()
     # find_best_intr()
+    # find_big_cars()
     # process_kpts3d()
     # search_best_intr()
     # remove_logs2()
@@ -714,4 +1024,6 @@ if __name__ == '__main__':
     # find_nonconvex_contour()
     # find_inner_contour()
     # remove_2dgs_pc()
-    crop_images()
+    # crop_images()
+    # filter_badcase()
+    # process_bbox3d()

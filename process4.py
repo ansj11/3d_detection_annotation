@@ -494,14 +494,31 @@ def detectAndMatch(image1, image2, ratio=0.75):
     # return a tuple of keypoints and features
     return np.array(mkpts0), np.array(mkpts1)
 
+# def search_car_brand(sfm_list, brand, subbrand, color):
+#     sfm_paths = []
+#     for sfm_path in sfm_list:
+#         if brand in sfm_path and subbrand in sfm_path and color in sfm_path:
+#             img_paths = os.listdir(os.path.join(sfm_path.replace('2dgs', 'sfm'), 'images'))
+#             if len(img_paths) < 40: continue
+#             sfm_paths.append(sfm_path)
+#     return sfm_paths
+
+
 def search_car_brand(sfm_list, brand, subbrand, color):
     sfm_paths = []
     for sfm_path in sfm_list:
         if brand in sfm_path and subbrand in sfm_path and color in sfm_path:
             img_paths = os.listdir(os.path.join(sfm_path.replace('2dgs', 'sfm'), 'images'))
-            if len(img_paths) < 40: continue
-            sfm_paths.append(sfm_path)
-    return sfm_paths
+            sfm_paths.append([sfm_path, len(img_paths)])
+    
+    if len(sfm_paths) == 0:
+        return sfm_paths
+    sfm_paths = sorted(sfm_paths, key=lambda x: x[1], reverse=True)
+    max_len = sfm_paths[0][1]
+    paths = [sfm_path[0] for sfm_path in sfm_paths if sfm_path[1] == max_len]
+    paths = np.random.choice(paths, min(3, len(paths)), replace=False)
+    
+    return paths
 
 def brand_list(path):
     sfm_paths = []

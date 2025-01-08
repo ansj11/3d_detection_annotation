@@ -135,9 +135,9 @@ def main(mode='bbox', debug=True, pnp=True, padding_pixel=0):
             print(bbox[-2:], " <= 50", result['brand'])
             continue
 
-        # if brand not in ["斯柯达"]: # or subbrand not in ["雅阁"]: # "本田", 
-        #     print("", brand, subbrand, year, color)
-        #     continue
+        if subbrand not in ["雅阁", "奔腾X40", "轩逸", "哪吒V", "英朗"]: # "雅阁"]: # "本田", "速锐"
+            print("", brand, subbrand, year, color)
+            continue
         xyxy = result['xyxy']
         x0, y0, x1, y1 = xyxy
         crop = image[y0:y1, x0:x1]
@@ -170,10 +170,6 @@ def main(mode='bbox', debug=True, pnp=True, padding_pixel=0):
         queries = result['queries']
         for query in queries:
             gs_dir = query['gs_path']
-            name = query['name']
-            if name in dic[track_id] and dic[track_id][name]['loss'][0] < 0.3:
-                print(name, "in dic and loss < 0.3")
-                continue
 
             gs_path = os.path.join(gs_dir, 'point_cloud/iteration_7000/point_cloud.ply')
             if not os.path.exists(gs_path):
@@ -299,19 +295,19 @@ def GS_Refiner(target_img, mask, omask, init_camera, gaussians, device=None, bbo
     print(init_camera.image_name, [h, w], CFG.START_LR, query['occlude'], omask.max())
     optimizer = optim.AdamW([{'params': [gaussians._delta_R], 'lr': CFG.START_LR*0.5, 'name': 'rotation'}, 
                              {'params': [gaussians._delta_T], 'lr': CFG.START_LR, 'name': 'translation'}, ], lr=0.0)
-    # lr_scheduler = CosineAnnealingWarmupRestarts(optimizer, CFG.MAX_STEPS,
-    #                                             warmup_steps=CFG.WARMUP, 
-    #                                             max_lr=CFG.START_LR, 
-    #                                             min_lr=CFG.END_LR)
+    lr_scheduler = CosineAnnealingWarmupRestarts(optimizer, CFG.MAX_STEPS,
+                                                warmup_steps=CFG.WARMUP, 
+                                                max_lr=CFG.START_LR, 
+                                                min_lr=CFG.END_LR)
     iter_losses = list()
     best_RT, min_loss = None, [1e6, 1e6]
     best_img = None
     CFG.MAX_STEPS = 700
     for iter_step in range(CFG.MAX_STEPS):  # 100
-        if iter_step in [300,]:
+        if iter_step in [300, ]:
             for param_group in optimizer.param_groups:
                 if param_group["name"] in ["translation", "rotation"]:
-                    param_group['lr'] *= 0.2
+                    param_group['lr'] *= 0.5
                     
         idx = 0
         # ret = GS_Renderer(init_camera, gaussians, gaussian_PipeP, gaussian_BG)
@@ -319,10 +315,10 @@ def GS_Refiner(target_img, mask, omask, init_camera, gaussians, device=None, bbo
         unmasked = ret['render'].clone()
         render_img = ret['render']
         render_mask = ret['rend_alpha']
-        if omask.max() > 0:
+        if True: # omask.max() > 0:
             render_img[omask.expand_as(render_img) >= 0.5] = 0 if black_bg else 1.0
             render_mask[omask.expand_as(render_mask) >= 0.5] = 0
-        elif (iter_step >= CFG.MAX_STEPS * 0.9 and query['occlude']) or iter_step >= CFG.MAX_STEPS - 0:
+        elif (iter_step >= CFG.MAX_STEPS * 0.2 and query['occlude']) or iter_step >= CFG.MAX_STEPS - 0:
             render_img[mask.expand_as(render_img) <= 0.5] = 0
             render_mask[mask.expand_as(render_mask) <= 0.5] = 0
 
@@ -433,7 +429,7 @@ def GS_Refiner(target_img, mask, omask, init_camera, gaussians, device=None, bbo
         
         loss.backward()
         optimizer.step()
-        # lr_scheduler.step()
+        lr_scheduler.step()
         optimizer.zero_grad()
         
         iter_losses.append(total_loss)

@@ -16,10 +16,10 @@ save_reference_mask = True
 #### configure for 3D-GS-Refiner  ####
 ROT_TOPK = 1   # single rotation proposal
 
-WARMUP = 50
-END_LR = 1e-4 # 1e-6
-START_LR = 1e-2
-MAX_STEPS = 300
+WARMUP = 20
+END_LR = 1e-5 # 0
+START_LR = 5e-3
+MAX_STEPS = 700
 GS_RENDER_SIZE = 224
 EARLY_STOP_MIN_STEPS = 100
 EARLY_STOP_LOSS_GRAD_NORM = 1e-7

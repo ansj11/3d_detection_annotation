@@ -14,7 +14,7 @@ from PIL import Image
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--input", type=str, default='./metaloop_20241126210108/metaloop_data/dicts/*json',
+parser.add_argument("--input", type=str, default='./metaloop_20241126205435/metaloop_data/trial_v2/*jpg',
                         help="input path")
 args = parser.parse_args()
 
@@ -23,11 +23,19 @@ def main():
     root = args.input
     
     image_paths = sorted(glob(root))
+    filter_paths = []
+    for image_path in image_paths:
+        json_path = image_path.replace('trial_v2', 'poses_v1')[:-3] + 'json'
+        if os.path.exists(json_path):
+            continue
+        filter_paths.append(image_path)
     
-    print("chosen images:", len(image_paths))
+    
+    print("chosen images:", len(image_paths), len(filter_paths))
+    image_paths = filter_paths
     
     n_gpu = torch.cuda.device_count()
-    total_num = 7 * n_gpu
+    total_num = 8 * n_gpu
     length = len(image_paths)
     interval = int(length/total_num) + 1
     pool = []
@@ -45,14 +53,14 @@ def main():
     print('parallel pose optimize done!')
 
 def func(paths, idx):
-    for i, path in enumerate(paths[::-1]):
+    for i, path in enumerate(paths):
         
         n_gpu = torch.cuda.device_count()
         gpu_id = idx % n_gpu
         path = path.replace('(', '\(').replace(')', '\)').replace('|', '\|')
-        basename = os.path.basename(path)[:-5]
+        basename = os.path.basename(path)[:-4]
         print('traing %d: %d/%d ' % (idx, i, len(paths)), path)
-        cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process3.py --input %s > logs3/%s.log" %(gpu_id, path, basename)
+        cmd_str = "CUDA_VISIBLE_DEVICES=%d nohup python -u process1.py --input %s > logs/%s_%d.log" %(gpu_id, path, basename, idx)
         os.system(cmd_str)
 
 
