@@ -12,3 +12,10 @@ car_color_white 0501001010
 car_color_silver 0501001011
 car_color_red 0501001012
 
+标注信息：需要标注出车辆mask，遮挡mask，车型类别，颜色和车轮关键点
+
+根据车轮关键点pnp求解出初始位姿，通过pose refine得到精确位姿。
+
+process_data.py: 处理分割mask、颜色分类、车型识别以及车辆车轮点数据
+prefilter.py: 过滤太小车型maxhw<50, 每张图保存在一个json中
+process3.py: 单图中每辆车的pose refine代码，输入处理后的json
